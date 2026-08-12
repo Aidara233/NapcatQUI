@@ -49,7 +49,10 @@ public class OneBotMessageParser
 
             return postType switch
             {
-                "message" => ParseMessage(root),
+                // message_sent 是自发消息（本机/其他设备发出的回声）。NapCat 的历史接口
+                // 也会用 message_sent 标记自己发的消息；不解析的话自发消息会被整体丢弃，
+                // 导致历史拉取/实时推送都不含自己。
+                "message" or "message_sent" => ParseMessage(root),
                 "notice" => ParseNotice(root),
                 "request" => ParseRequest(root),
                 "meta_event" => ParseMetaEvent(root),
