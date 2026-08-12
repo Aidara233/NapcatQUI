@@ -1,0 +1,45 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="NapcatQUI.Client.Views.ImageViewerWindow"
+        Title="图片查看器"
+        Width="900" Height="640"
+        MinWidth="320" MinHeight="240"
+        Background="#FF202020"
+        WindowStartupLocation="CenterScreen"
+        KeyDown="OnKeyDown">
+    <Grid>
+        <!-- 大图：双击打开时先适应窗口，滚轮缩放，拖拽平移 -->
+        <Image x:Name="ViewerImage" Stretch="Uniform"
+               RenderTransformOrigin="0.5,0.5"
+               PointerWheelChanged="OnViewerPointerWheelChanged"
+               DoubleTapped="OnViewerDoubleTapped"
+               PointerPressed="OnViewerPointerPressed"
+               PointerMoved="OnViewerPointerMoved"
+               PointerReleased="OnViewerPointerReleased"
+               PointerCaptureLost="OnViewerPointerCaptureLost" />
+
+        <!-- 底部页码指示 -->
+        <Border VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,14"
+                Background="#66000000" CornerRadius="6" Padding="12,5">
+            <TextBlock x:Name="IndexText" Foreground="White" FontSize="12" />
+        </Border>
+
+        <!-- 多图切换 -->
+        <Button x:Name="PrevButton" Content="‹" Click="OnPrev"
+                Background="Transparent" Foreground="White" FontSize="34"
+                HorizontalAlignment="Left" VerticalAlignment="Center"
+                Padding="16,26" CornerRadius="8" IsVisible="False"
+                ToolTip.Tip="上一张 (←)" />
+        <Button x:Name="NextButton" Content="›" Click="OnNext"
+                Background="Transparent" Foreground="White" FontSize="34"
+                HorizontalAlignment="Right" VerticalAlignment="Center"
+                Padding="16,26" CornerRadius="8" IsVisible="False"
+                ToolTip.Tip="下一张 (→)" />
+
+        <!-- 关闭 -->
+        <Button Content="✕" Click="OnClose"
+                Background="#55000000" Foreground="White" FontSize="15"
+                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12"
+                Padding="10,6" CornerRadius="6" ToolTip.Tip="关闭 (Esc)" />
+    </Grid>
+</Window>

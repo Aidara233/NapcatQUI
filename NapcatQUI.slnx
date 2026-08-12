@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="NapcatQUI.Client/NapcatQUI.Client.csproj" />
+  <Project Path="NapcatQUI.Core/NapcatQUI.Core.csproj" />
+</Solution>

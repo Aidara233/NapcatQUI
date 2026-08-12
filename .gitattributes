@@ -1,0 +1,28 @@
+# 默认：文本文件在仓库中存储 LF，检出时按平台转换
+* text=auto
+
+# .NET 源码强制 CRLF（Windows 项目约定）
+*.cs text eol=crlf
+*.axaml text eol=crlf
+*.csproj text eol=crlf
+*.slnx text eol=crlf
+*.sln text eol=crlf
+*.props text eol=crlf
+*.targets text eol=crlf
+*.manifest text eol=crlf
+*.json text eol=crlf
+*.xml text eol=crlf
+*.md text eol=lf
+*.txt text eol=lf
+*.sh text eol=lf
+
+# 二进制文件不做行尾转换
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.dll binary
+*.exe binary
+*.pdb binary

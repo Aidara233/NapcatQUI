@@ -1,0 +1,43 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ResourceDictionary.ThemeDictionaries>
+    <ResourceDictionary x:Key="Light">
+      <SolidColorBrush x:Key="BgPrimaryBrush" Color="#F5F3F0" />
+      <SolidColorBrush x:Key="BgSurfaceBrush" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="BgSidebarBrush" Color="#EEECE8" />
+      <SolidColorBrush x:Key="BgHoverBrush" Color="#E8E4DE" />
+      <SolidColorBrush x:Key="BgActiveBrush" Color="#E0DBD4" />
+      <SolidColorBrush x:Key="TextPrimaryBrush" Color="#2C2A28" />
+      <SolidColorBrush x:Key="TextSecondaryBrush" Color="#8B8680" />
+      <SolidColorBrush x:Key="TextTertiaryBrush" Color="#B8B3AC" />
+      <SolidColorBrush x:Key="AccentBrush" Color="#C4873C" />
+      <SolidColorBrush x:Key="AccentMutedBrush" Color="#F5EDE3" />
+      <SolidColorBrush x:Key="BorderBrush" Color="#E5E2DD" />
+      <SolidColorBrush x:Key="BorderStrongBrush" Color="#D5D0C9" />
+      <SolidColorBrush x:Key="SuccessBrush" Color="#5B8C5A" />
+      <SolidColorBrush x:Key="DangerBrush" Color="#C4554D" />
+      <SolidColorBrush x:Key="WarningBrush" Color="#C4943C" />
+      <SolidColorBrush x:Key="MineBubbleBrush" Color="#F5EDE3" />
+      <SolidColorBrush x:Key="OtherBubbleBrush" Color="#FFFFFF" />
+    </ResourceDictionary>
+    <ResourceDictionary x:Key="Dark">
+      <SolidColorBrush x:Key="BgPrimaryBrush" Color="#1E1D1B" />
+      <SolidColorBrush x:Key="BgSurfaceBrush" Color="#282725" />
+      <SolidColorBrush x:Key="BgSidebarBrush" Color="#242220" />
+      <SolidColorBrush x:Key="BgHoverBrush" Color="#302E2A" />
+      <SolidColorBrush x:Key="BgActiveBrush" Color="#383632" />
+      <SolidColorBrush x:Key="TextPrimaryBrush" Color="#E8E4E0" />
+      <SolidColorBrush x:Key="TextSecondaryBrush" Color="#8B8680" />
+      <SolidColorBrush x:Key="TextTertiaryBrush" Color="#5E5A55" />
+      <SolidColorBrush x:Key="AccentBrush" Color="#D4A04A" />
+      <SolidColorBrush x:Key="AccentMutedBrush" Color="#3A3026" />
+      <SolidColorBrush x:Key="BorderBrush" Color="#383632" />
+      <SolidColorBrush x:Key="BorderStrongBrush" Color="#4A4640" />
+      <SolidColorBrush x:Key="SuccessBrush" Color="#6B9E6A" />
+      <SolidColorBrush x:Key="DangerBrush" Color="#D46A62" />
+      <SolidColorBrush x:Key="WarningBrush" Color="#D0A254" />
+      <SolidColorBrush x:Key="MineBubbleBrush" Color="#3A3026" />
+      <SolidColorBrush x:Key="OtherBubbleBrush" Color="#282725" />
+    </ResourceDictionary>
+  </ResourceDictionary.ThemeDictionaries>
+</ResourceDictionary>

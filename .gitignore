@@ -1,0 +1,88 @@
+## .NET / MSBuild build outputs
+bin/
+obj/
+
+## NuGet packages
+*.nupkg
+*.snupkg
+.nuget/packages/
+packages/
+# NuGet v3 lock file
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+## JetBrains Rider
+.idea/
+*.sln.iml
+
+## VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## MSBuild cache
+*.binlog
+
+## Test results
+TestResults/
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+
+## User-specific files
+*.rsuser
+*.cache
+
+## Windows thumbnail cache
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+## Avalonia designer
+.avalonia/
+
+## Publish output (dotnet publish)
+publish/
+
+## App config with secrets (keep AppConfig.cs but ignore local overrides)
+appsettings.*.json
+!appsettings.Development.json
+
+## SQLite database files (runtime data)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+## Log files
+*.log
+logs/
+
+## Temp / scratch
+*.tmp
+*.bak
+*.swp
+*~

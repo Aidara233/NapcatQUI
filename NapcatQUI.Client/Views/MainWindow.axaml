@@ -1,0 +1,824 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NapcatQUI.Client.ViewModels"
+        xmlns:models="using:NapcatQUI.Client.Models"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="960" d:DesignHeight="640"
+        x:Class="NapcatQUI.Client.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="NapcatQUI"
+        MinWidth="800" MinHeight="540"
+        Width="960" Height="640"
+        ExtendClientAreaToDecorationsHint="False"
+        TransparencyLevelHint="None">
+
+    <Design.DataContext>
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Window.Styles>
+        <Style Selector="ScrollBar">
+            <Setter Property="Width" Value="4" />
+            <Setter Property="Margin" Value="2,0" />
+        </Style>
+        <Style Selector="ListBoxItem:selected">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Border.nav-btn:pointerover">
+            <Setter Property="Background" Value="{DynamicResource BgHoverBrush}" />
+        </Style>
+        <Style Selector="Border.conv-item">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Border.conv-item:pointerover">
+            <Setter Property="Background" Value="{DynamicResource BgHoverBrush}" />
+        </Style>
+        <Style Selector="Border.conv-item.selected">
+            <Setter Property="Background" Value="{DynamicResource BgActiveBrush}" />
+        </Style>
+        <Style Selector="Border.contact-item">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Border.contact-item:pointerover">
+            <Setter Property="Background" Value="{DynamicResource BgHoverBrush}" />
+        </Style>
+        <Style Selector="Border.contact-item.selected">
+            <Setter Property="Background" Value="{DynamicResource BgActiveBrush}" />
+        </Style>
+        <!-- 自己/对方气泡配色 -->
+        <Style Selector="Border.bubble.mine">
+            <Setter Property="Background" Value="{DynamicResource MineBubbleBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="Border.bubble.other">
+            <Setter Property="Background" Value="{DynamicResource OtherBubbleBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+        </Style>
+    </Window.Styles>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="56" />
+            <ColumnDefinition Width="260" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ===== 导航栏 56px ===== -->
+        <Border Grid.Column="0" Background="{DynamicResource BgSidebarBrush}">
+            <StackPanel Spacing="16" Margin="0,12,0,0" HorizontalAlignment="Center">
+                <Grid Width="40" Height="40" ToolTip.Tip="{Binding AccountSummary}"
+                      Classes="avatar-btn" PointerPressed="OnAvatarClicked">
+                    <Border CornerRadius="20" Background="{Binding CurrentAccount.AvatarColor}"
+                            IsVisible="{Binding !CurrentAccount.AvatarVisible}">
+                        <TextBlock Text="{Binding CurrentAccount.Initials}" FontSize="14" Foreground="White"
+                                   TextAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <Border CornerRadius="20" ClipToBounds="True"
+                            IsVisible="{Binding CurrentAccount.AvatarVisible}">
+                        <Image Source="{Binding CurrentAccount.AvatarBitmap}" Stretch="UniformToFill" />
+                    </Border>
+                </Grid>
+                <Button Width="40" Height="40" CornerRadius="8"
+                        Command="{Binding SelectPageCommand}" CommandParameter="chat"
+                        Background="{Binding NavChatBackground}"
+                        ToolTip.Tip="聊天" Classes="nav-btn">
+                    <TextBlock Text="💬" FontSize="20" TextAlignment="Center" />
+                </Button>
+                <Button Width="40" Height="40" CornerRadius="8"
+                        Command="{Binding SelectPageCommand}" CommandParameter="contacts"
+                        Background="{Binding NavContactBackground}"
+                        ToolTip.Tip="联系人" Classes="nav-btn">
+                    <TextBlock Text="👥" FontSize="20" TextAlignment="Center" />
+                </Button>
+                <Button Width="40" Height="40" CornerRadius="8"
+                        Command="{Binding SelectPageCommand}" CommandParameter="settings"
+                        Background="{Binding NavSettingsBackground}"
+                        ToolTip.Tip="设置" Classes="nav-btn">
+                    <TextBlock Text="⚙" FontSize="20" TextAlignment="Center" />
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== 会话列表 260px ===== -->
+        <Grid Grid.Column="1" RowDefinitions="48,*,Auto" Background="{DynamicResource BgSidebarBrush}">
+            <Border Grid.Row="0" Padding="12,8">
+                <TextBox Text="{Binding SearchText, Mode=TwoWay}" PlaceholderText="搜索"
+                         Background="{DynamicResource BgPrimaryBrush}"
+                         BorderThickness="0" CornerRadius="6" Padding="8,4" FontSize="13" />
+            </Border>
+            <!-- ItemsControl + VirtualizingStackPanel：保留虚拟化性能，又没有 ListBox 的选择
+                 逻辑/蓝色高亮干扰，点击统一走 PointerPressed 手动切换 -->
+            <ItemsControl Grid.Row="1" ItemsSource="{Binding Conversations}" Background="Transparent">
+                <ItemsControl.Template>
+                    <ControlTemplate>
+                        <ScrollViewer Background="Transparent" HorizontalScrollBarVisibility="Disabled">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </ItemsControl.Template>
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="models:ConversationItem">
+                        <Border Padding="12,10" Classes="conv-item"
+                                Classes.selected="{Binding IsSelected}"
+                                PointerPressed="OnConversationClicked" Tag="{Binding}">
+                            <Grid ColumnDefinitions="40,*" ColumnSpacing="10">
+                                <Grid Grid.Column="0" Width="40" Height="40">
+                                    <Border CornerRadius="20" Background="{Binding AvatarColor}"
+                                            IsVisible="{Binding !AvatarVisible}">
+                                        <TextBlock Text="{Binding Initials}" FontSize="14" Foreground="White"
+                                                   TextAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                    <Border CornerRadius="20" ClipToBounds="True"
+                                            IsVisible="{Binding AvatarVisible}">
+                                        <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                    </Border>
+                                </Grid>
+                                <Grid Grid.Column="1" RowDefinitions="Auto,Auto">
+                                    <DockPanel Grid.Row="0">
+                                        <TextBlock Text="{Binding Name}" FontSize="14"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock DockPanel.Dock="Right" Text="{Binding Time}" FontSize="11"
+                                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                                   Margin="6,0,0,0" />
+                                    </DockPanel>
+                                    <Grid Grid.Row="1" Margin="0,2,0,0">
+                                        <TextBlock Text="{Binding Preview}" FontSize="12"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <Border HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                Background="{DynamicResource AccentBrush}"
+                                                CornerRadius="8" Padding="5,1"
+                                                IsVisible="{Binding HasUnread}">
+                                            <TextBlock Text="{Binding UnreadText}" FontSize="10" Foreground="White" />
+                                        </Border>
+                                    </Grid>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- 加载更多（会话按窗口加载，避免全量渲染卡顿） -->
+            <Button Grid.Row="2" Command="{Binding LoadMoreConversationsCommand}"
+                    IsVisible="{Binding HasMoreConversations}"
+                    Content="加载更多会话…"
+                    HorizontalAlignment="Stretch" Margin="8,4"
+                    Padding="8,4" FontSize="11" CornerRadius="4"
+                    Background="Transparent" />
+        </Grid>
+
+        <!-- ===== 主内容区 ===== -->
+        <Grid Grid.Column="2">
+
+            <!-- ===== 聊天页 ===== -->
+            <Grid IsVisible="{Binding IsChatPage}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="48" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- 标题栏 -->
+                <Border Grid.Row="0" Padding="16,0" Background="{DynamicResource BgSurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+                    <DockPanel>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding SelectedConversation.Name}" FontSize="16" FontWeight="500"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding ConversationSubtitle}" FontSize="11"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                        </StackPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <Button Content="👥" Width="34" Height="34" CornerRadius="6"
+                                    Command="{Binding ToggleGroupDetailsCommand}"
+                                    IsVisible="{Binding IsSelectedGroup}" ToolTip.Tip="群资料" />
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- 消息区 -->
+                <Grid Grid.Row="1" Background="{DynamicResource BgPrimaryBrush}" RowDefinitions="Auto,*">
+                    <!-- 加载更早的消息（本地分页，向上翻历史） -->
+                    <Button Grid.Row="0" Content="加载更早的消息…"
+                            Command="{Binding LoadEarlierMessagesCommand}"
+                            IsVisible="{Binding HasMoreMessages}"
+                            HorizontalAlignment="Center" Margin="0,6"
+                            Padding="12,4" FontSize="11" CornerRadius="6"
+                            Background="Transparent" />
+                    <StackPanel Grid.Row="1" IsVisible="{Binding ShowChatEmptyState}"
+                                VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+                        <Border Width="64" Height="64" Background="{DynamicResource BgHoverBrush}"
+                                CornerRadius="32" HorizontalAlignment="Center">
+                            <TextBlock Text="🐱" FontSize="28" TextAlignment="Center"
+                                       VerticalAlignment="Center" Foreground="{DynamicResource TextTertiaryBrush}" />
+                        </Border>
+                        <TextBlock Text="选一个会话" FontSize="14" Foreground="{DynamicResource TextTertiaryBrush}"
+                                   TextAlignment="Center" />
+                        <TextBlock Text="开始聊天" FontSize="14" Foreground="{DynamicResource TextTertiaryBrush}"
+                                   TextAlignment="Center" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="1" x:Name="MessageScroll" IsVisible="{Binding HasSelectedConversation}">
+                        <ItemsControl ItemsSource="{Binding Messages}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:MessageItem">
+                                    <Grid Margin="16,4" RowDefinitions="Auto,Auto">
+                                        <!-- 时间分隔条：首条 / 跨天 / 间隔≥5分钟时显示 -->
+                                        <TextBlock Grid.Row="0" Text="{Binding Time}" FontSize="11"
+                                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                                   HorizontalAlignment="Center" Margin="0,6,0,2"
+                                                   IsVisible="{Binding ShowTimeDivider}" />
+                                        <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto">
+                                        <!-- 对方头像 -->
+                                        <Grid Grid.Column="0" Width="36" Height="36" Margin="0,2,0,0"
+                                              VerticalAlignment="Top" IsVisible="{Binding IsOther}">
+                                            <Border CornerRadius="18" Background="{Binding AvatarColor}"
+                                                    IsVisible="{Binding !AvatarVisible}">
+                                                <TextBlock Text="{Binding SenderInitials}" FontSize="12" Foreground="White"
+                                                           TextAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <Border CornerRadius="18" ClipToBounds="True"
+                                                    IsVisible="{Binding AvatarVisible}">
+                                                <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                            </Border>
+                                        </Grid>
+
+                                        <!-- 气泡（右键弹消息操作菜单，见 OnBubblePointerPressed） -->
+                                        <Border Grid.Column="1" Classes="bubble"
+                                                Classes.mine="{Binding IsMine}" Classes.other="{Binding IsOther}"
+                                                HorizontalAlignment="{Binding BubbleAlignment}"
+                                                MaxWidth="480" CornerRadius="10" Padding="12,8" Margin="8,0"
+                                                BorderThickness="1"
+                                                PointerPressed="OnBubblePointerPressed"
+                                                IsVisible="{Binding IsNotSystem}">
+                                            <Grid>
+                                                <StackPanel Spacing="4">
+                                                <TextBlock Text="{Binding SenderName}" FontSize="13" FontWeight="500"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                           IsVisible="{Binding ShowName}" />
+                                                <!-- 引用消息：点击跳转到被引用消息 -->
+                                                <Border IsVisible="{Binding HasReply}" Padding="8,6"
+                                                        Background="#00000012" CornerRadius="6"
+                                                        Cursor="Hand" PointerPressed="OnReplyClicked">
+                                                    <StackPanel Spacing="2">
+                                                        <TextBlock Text="{Binding ReplySenderName}" FontSize="11"
+                                                                   FontWeight="500"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   IsVisible="{Binding HasReplyContent}" />
+                                                        <TextBlock Text="{Binding ReplyDisplay}" FontSize="12"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   TextTrimming="CharacterEllipsis" MaxWidth="340" />
+                                                    </StackPanel>
+                                                </Border>
+                                                <StackPanel IsVisible="{Binding IsFile}"
+                                                            Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock Text="📄" FontSize="20" />
+                                                    <TextBlock Text="{Binding FileName}" FontSize="13"
+                                                               FontWeight="500" VerticalAlignment="Center" />
+                                                </StackPanel>
+                                                <!-- 图片：URL 解析后显示本体，加载中/失败各有占位 -->
+                                                <ItemsControl ItemsSource="{Binding Images}"
+                                                              IsVisible="{Binding HasImages}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="models:MessageImage">
+                                                            <Grid Width="260" Height="180" Margin="0,2"
+                                                                  ClipToBounds="True"
+                                                                  PointerPressed="OnImageCellPointerPressed">
+                                                                <Border Background="#00000010" CornerRadius="6" />
+                                                                <Image Source="{Binding Bitmap}" Stretch="Uniform" />
+                                                                <StackPanel IsVisible="{Binding Loading}"
+                                                                            VerticalAlignment="Center"
+                                                                            HorizontalAlignment="Center" Spacing="6">
+                                                                    <ProgressBar IsIndeterminate="True" Width="120"
+                                                                                 Height="4" />
+                                                                    <TextBlock Text="加载图片…" FontSize="11"
+                                                                               Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                               HorizontalAlignment="Center" />
+                                                                </StackPanel>
+                                                                <StackPanel IsVisible="{Binding Failed}"
+                                                                            VerticalAlignment="Center"
+                                                                            HorizontalAlignment="Center" Spacing="4">
+                                                                    <TextBlock Text="🖼" FontSize="24"
+                                                                               HorizontalAlignment="Center" />
+                                                                    <TextBlock Text="图片加载失败" FontSize="11"
+                                                                               Foreground="{DynamicResource TextTertiaryBrush}" />
+                                                                </StackPanel>
+                                                            </Grid>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                                <TextBlock Text="{Binding Text}" FontSize="14" TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           IsVisible="{Binding IsTextLike}" />
+                                                <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                                           Foreground="{DynamicResource TextTertiaryBrush}"
+                                                           HorizontalAlignment="Right" IsVisible="{Binding IsMine}" />
+                                                </StackPanel>
+                                                <!-- 点击引用后高亮目标消息 -->
+                                                <Border IsVisible="{Binding IsHighlighted}"
+                                                        Background="#33E0A33C" CornerRadius="9"
+                                                        IsHitTestVisible="False" />
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- 自己头像 -->
+                                        <Grid Grid.Column="2" Width="36" Height="36" Margin="0,2,0,0"
+                                              VerticalAlignment="Top" IsVisible="{Binding IsMine}">
+                                            <Border CornerRadius="18" Background="{Binding AvatarColor}"
+                                                    IsVisible="{Binding !AvatarVisible}">
+                                                <TextBlock Text="{Binding SenderInitials}" FontSize="12" Foreground="White"
+                                                           TextAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <Border CornerRadius="18" ClipToBounds="True"
+                                                    IsVisible="{Binding AvatarVisible}">
+                                                <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                            </Border>
+                                        </Grid>
+
+                                        <!-- 系统消息 -->
+                                        <TextBlock Grid.Column="1" Text="{Binding Text}" FontSize="11"
+                                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                                   TextAlignment="Center" TextWrapping="Wrap"
+                                                   IsVisible="{Binding IsSystem}" Margin="8,4" />
+                                    </Grid>
+                                </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 输入区 -->
+                <Border Grid.Row="2" Padding="12,8" Background="{DynamicResource BgSurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                        IsVisible="{Binding HasSelectedConversation}">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto">
+                        <!-- 引用回复条 -->
+                        <Border Grid.Row="0" Margin="0,0,0,6" Padding="8,6" Background="#00000012"
+                                CornerRadius="6" IsVisible="{Binding HasReplyTarget}">
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="✕" Width="24" Height="24" Padding="0"
+                                        CornerRadius="4" Background="Transparent" FontSize="12"
+                                        Command="{Binding ClearReplyCommand}" />
+                                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <TextBlock Text="正在回复" FontSize="11"
+                                               Foreground="{DynamicResource AccentBrush}" />
+                                    <TextBlock Text="{Binding SelectedReply.SenderName}" FontSize="12" FontWeight="500"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    <TextBlock Text="{Binding SelectedReply.Text}" FontSize="12"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               TextTrimming="CharacterEllipsis" MaxWidth="300" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- @ 已选成员 chips -->
+                        <ItemsControl Grid.Row="1" ItemsSource="{Binding SelectedAtMembers}"
+                                      Margin="0,0,0,6" IsVisible="{Binding HasSelectedAtMembers}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:AtMemberChip">
+                                    <Border Margin="0,0,6,4" Padding="8,3" Background="#00000012" CornerRadius="6">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="{Binding DisplayName}" FontSize="12"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                                            <Border Padding="4,1" CornerRadius="3" Background="#0A000000"
+                                                    Cursor="Hand" VerticalAlignment="Center"
+                                                    Tag="{Binding}" PointerPressed="OnRemoveAtMemberClicked"
+                                                    ToolTip.Tip="移除">
+                                                <TextBlock Text="✕" FontSize="10"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                                            </Border>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBox x:Name="Composer" Grid.Row="2" Text="{Binding ComposerText, Mode=TwoWay}"
+                                 PlaceholderText="输入消息，回车发送（Shift+Enter 换行）"
+                                 AcceptsReturn="True" MinHeight="60" MaxHeight="160"
+                                 TextWrapping="Wrap" FontSize="14"
+                                 Background="{DynamicResource BgSurfaceBrush}" />
+                        <DockPanel Grid.Row="3" Margin="0,6,0,0">
+                            <Button DockPanel.Dock="Right" Content="发送 ⬆"
+                                    Command="{Binding SendMessageCommand}"
+                                    Background="{DynamicResource AccentBrush}" Foreground="White"
+                                    FontSize="13" CornerRadius="6" Padding="16,6" />
+                            <Button DockPanel.Dock="Left" Content="@ 成员"
+                                    Command="{Binding OpenAtPickerCommand}"
+                                    IsVisible="{Binding IsSelectedGroup}"
+                                    ToolTip.Tip="在群聊中 @ 成员"
+                                    Background="Transparent" FontSize="12" CornerRadius="6" Padding="10,4" />
+                            <Button DockPanel.Dock="Left" Content="📷 图片"
+                                    Command="{Binding SendImagesCommand}"
+                                    ToolTip.Tip="发送图片（也可直接 Ctrl+V 粘贴剪贴板图片）"
+                                    Background="Transparent" FontSize="12" CornerRadius="6" Padding="10,4" />
+                            <TextBlock Text="{Binding StatusMessage}" FontSize="11"
+                                       Foreground="{DynamicResource DangerBrush}"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Grid>
+                </Border>
+
+                <!-- 群详情抽屉 -->
+                <Border Grid.Row="1" HorizontalAlignment="Right" Width="280" ZIndex="5"
+                        Background="{DynamicResource BgSurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0"
+                        IsVisible="{Binding IsGroupDetailsOpen}" Padding="16">
+                    <StackPanel Spacing="12">
+                        <DockPanel>
+                            <TextBlock Text="{Binding GroupDetailsTitle}" FontSize="16" FontWeight="500"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                            <Button DockPanel.Dock="Right" Content="✕" Width="28" Height="28" CornerRadius="6"
+                                    Command="{Binding ToggleGroupDetailsCommand}" />
+                        </DockPanel>
+                        <TextBlock Text="{Binding GroupDetailsSubtitle}" FontSize="12"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="群成员" FontSize="13" FontWeight="500"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <ItemsControl ItemsSource="{Binding GroupMembers}" MaxHeight="380"
+                                      Background="Transparent">
+                            <ItemsControl.Template>
+                                <ControlTemplate>
+                                    <ScrollViewer Background="Transparent" HorizontalScrollBarVisibility="Disabled">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </ControlTemplate>
+                            </ItemsControl.Template>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <VirtualizingStackPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:GroupMemberItem">
+                                    <Grid ColumnDefinitions="36,*" ColumnSpacing="10" Margin="0,4">
+                                        <Grid Grid.Column="0" Width="36" Height="36">
+                                            <Border CornerRadius="18" Background="{Binding AvatarColor}"
+                                                    IsVisible="{Binding !AvatarVisible}">
+                                                <TextBlock Text="{Binding Initials}" FontSize="12" Foreground="White"
+                                                           TextAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <Border CornerRadius="18" ClipToBounds="True"
+                                                    IsVisible="{Binding AvatarVisible}">
+                                                <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                            </Border>
+                                        </Grid>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <TextBlock Text="{Binding Name}" FontSize="13"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                <TextBlock Text="{Binding Role}" FontSize="10"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding SpecialTitle}" FontSize="11"
+                                                       Foreground="{DynamicResource AccentBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       IsVisible="{Binding HasSpecialTitle}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- @ 成员选择面板 -->
+                <Border Grid.Row="1" HorizontalAlignment="Right" Width="280" ZIndex="6"
+                        Background="{DynamicResource BgSurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0"
+                        IsVisible="{Binding IsAtPickerOpen}" Padding="16">
+                    <DockPanel>
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <Button DockPanel.Dock="Right" Content="✕" Width="28" Height="28" CornerRadius="6"
+                                    Command="{Binding CloseAtPickerCommand}" />
+                            <TextBlock Text="选择要 @ 的成员" FontSize="16" FontWeight="500"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                        <Button DockPanel.Dock="Bottom" Content="{Binding AtPickerDoneText}"
+                                Command="{Binding CloseAtPickerCommand}"
+                                Background="{DynamicResource AccentBrush}" Foreground="White"
+                                FontSize="13" CornerRadius="6" Padding="12,6" Margin="0,8,0,0" />
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding GroupMembers}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="models:GroupMemberItem">
+                                        <Border Padding="8,6" Classes="contact-item" CornerRadius="6"
+                                                PointerPressed="OnAtMemberClicked" Tag="{Binding}">
+                                            <Grid ColumnDefinitions="28,*,Auto" ColumnSpacing="8">
+                                                <Grid Grid.Column="0" Width="28" Height="28">
+                                                    <Border CornerRadius="14" Background="{Binding AvatarColor}"
+                                                            IsVisible="{Binding !AvatarVisible}">
+                                                        <TextBlock Text="{Binding Initials}" FontSize="10" Foreground="White"
+                                                                   TextAlignment="Center" VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <Border CornerRadius="14" ClipToBounds="True"
+                                                            IsVisible="{Binding AvatarVisible}">
+                                                        <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                                    </Border>
+                                                </Grid>
+                                                <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="13"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="2" Text="✓" FontSize="14"
+                                                           Foreground="{DynamicResource AccentBrush}"
+                                                           VerticalAlignment="Center" IsVisible="{Binding IsSelected}" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Grid>
+
+            <!-- ===== 联系人页 ===== -->
+            <Grid IsVisible="{Binding IsContactsPage}" RowDefinitions="48,*">
+                <Border Grid.Row="0" Padding="16,0" Background="{DynamicResource BgSurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+                    <DockPanel>
+                        <TextBlock Text="联系人" FontSize="16" FontWeight="500"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" />
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <Button Content="好友" Command="{Binding ShowFriendsCommand}"
+                                    Padding="12,5" FontSize="12" CornerRadius="6"
+                                    Background="{Binding FriendsTabBackground}" />
+                            <Button Content="群聊" Command="{Binding ShowGroupsCommand}"
+                                    Padding="12,5" FontSize="12" CornerRadius="6"
+                                    Background="{Binding GroupsTabBackground}" />
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+                <ItemsControl Grid.Row="1" ItemsSource="{Binding Contacts}" IsVisible="{Binding IsFriendsTab}"
+                              Background="Transparent">
+                    <ItemsControl.Template>
+                        <ControlTemplate>
+                            <ScrollViewer Background="Transparent" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsPresenter />
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </ItemsControl.Template>
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="models:ContactItem">
+                            <Border Padding="16,10" Classes="contact-item"
+                                    PointerPressed="OnContactClicked" Tag="{Binding}">
+                                <Grid ColumnDefinitions="40,*" ColumnSpacing="10">
+                                    <Grid Grid.Column="0" Width="40" Height="40">
+                                        <Border CornerRadius="20" Background="{Binding AvatarColor}"
+                                                IsVisible="{Binding !AvatarVisible}">
+                                            <TextBlock Text="{Binding Initials}" FontSize="13" Foreground="White"
+                                                       TextAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <Border CornerRadius="20" ClipToBounds="True"
+                                                IsVisible="{Binding AvatarVisible}">
+                                            <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                        </Border>
+                                    </Grid>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                        <TextBlock Text="{Binding Name}" FontSize="14"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                        <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <ItemsControl Grid.Row="1" ItemsSource="{Binding Groups}" IsVisible="{Binding IsGroupsTab}"
+                              Background="Transparent">
+                    <ItemsControl.Template>
+                        <ControlTemplate>
+                            <ScrollViewer Background="Transparent" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsPresenter />
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </ItemsControl.Template>
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="models:ConversationItem">
+                            <Border Padding="16,10" Classes="contact-item"
+                                    PointerPressed="OnGroupClicked" Tag="{Binding}">
+                                <Grid ColumnDefinitions="40,*" ColumnSpacing="10">
+                                    <Grid Grid.Column="0" Width="40" Height="40">
+                                        <Border CornerRadius="20" Background="{Binding AvatarColor}"
+                                                IsVisible="{Binding !AvatarVisible}">
+                                            <TextBlock Text="{Binding Initials}" FontSize="13" Foreground="White"
+                                                       TextAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <Border CornerRadius="20" ClipToBounds="True"
+                                                IsVisible="{Binding AvatarVisible}">
+                                            <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                        </Border>
+                                    </Grid>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                        <TextBlock Text="{Binding Name}" FontSize="14"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                        <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Grid>
+
+            <!-- ===== 设置页 ===== -->
+            <Grid IsVisible="{Binding IsSettingsPage}" RowDefinitions="48,*">
+                <Border Grid.Row="0" Padding="16,0" Background="{DynamicResource BgSurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+                    <TextBlock Text="设置" FontSize="16" FontWeight="500"
+                               Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" />
+                </Border>
+                <ScrollViewer Grid.Row="1" Background="{DynamicResource BgPrimaryBrush}" Padding="24,16">
+                    <StackPanel Spacing="24">
+                        <!-- 主题 -->
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="主题" FontSize="14" FontWeight="500"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="浅色" Command="{Binding SetThemeCommand}" CommandParameter="Light"
+                                        Padding="12,6" Background="#F5F3F0" BorderThickness="1" BorderBrush="#E5E2DD"
+                                        CornerRadius="6" />
+                                <Button Content="深色" Command="{Binding SetThemeCommand}" CommandParameter="Dark"
+                                        Padding="12,6" Background="#F5F3F0" BorderThickness="1" BorderBrush="#E5E2DD"
+                                        CornerRadius="6" />
+                                <Button Content="跟随系统" Command="{Binding SetThemeCommand}" CommandParameter="Default"
+                                        Padding="12,6" Background="#F5F3F0" BorderThickness="1" BorderBrush="#E5E2DD"
+                                        CornerRadius="6" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding ThemeMode}" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" />
+                        </StackPanel>
+
+                        <!-- 账号管理 -->
+                        <StackPanel Spacing="8">
+                            <DockPanel>
+                                <TextBlock Text="账号管理" FontSize="14" FontWeight="500"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" />
+                                <Button DockPanel.Dock="Right" Content="＋ 添加账号"
+                                        Command="{Binding ToggleAddAccountFormCommand}"
+                                        Padding="12,6" Background="{DynamicResource AccentBrush}"
+                                        Foreground="White" FontSize="12" CornerRadius="6" />
+                            </DockPanel>
+
+                            <!-- 添加账号表单 -->
+                            <Border IsVisible="{Binding IsAddAccountFormOpen}" Padding="16"
+                                    Background="{DynamicResource BgSurfaceBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                                <StackPanel Spacing="8">
+                                    <TextBox PlaceholderText="WebSocket 地址（必填，如 ws://192.168.1.10:3001）"
+                                             Text="{Binding NewWsUrl}" FontSize="13" />
+                                    <TextBox PlaceholderText="Access Token（可选）"
+                                             Text="{Binding NewAccessToken}" FontSize="13" />
+                                    <TextBox PlaceholderText="QQ 号（可选，留空自动识别）"
+                                             Text="{Binding NewUin}" FontSize="13" />
+                                    <TextBox PlaceholderText="昵称（可选）"
+                                             Text="{Binding NewNickname}" FontSize="13" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                        <Button Content="取消" Command="{Binding ToggleAddAccountFormCommand}"
+                                                Padding="12,6" Background="#F5F3F0" BorderThickness="1" BorderBrush="#E5E2DD"
+                                                CornerRadius="6" />
+                                        <Button Content="添加" Command="{Binding AddAccountCommand}"
+                                                Padding="12,6" Background="{DynamicResource AccentBrush}"
+                                                Foreground="White" CornerRadius="6" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                                       Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+
+                            <!-- 账号列表 -->
+                            <ItemsControl ItemsSource="{Binding Accounts}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="models:AccountItem">
+                                        <Border Padding="12,10" Margin="0,4,0,0"
+                                                Background="{DynamicResource BgSurfaceBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1" CornerRadius="8">
+                                            <DockPanel>
+                                                <Grid DockPanel.Dock="Left" Width="36" Height="36">
+                                                    <Border CornerRadius="18" Background="{Binding AvatarColor}"
+                                                            IsVisible="{Binding !AvatarVisible}">
+                                                        <TextBlock Text="{Binding Initials}" FontSize="13" Foreground="White"
+                                                                   TextAlignment="Center" VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <Border CornerRadius="18" ClipToBounds="True"
+                                                            IsVisible="{Binding AvatarVisible}">
+                                                        <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                                    </Border>
+                                                </Grid>
+                                                <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <TextBlock Text="{Binding Nickname}" FontSize="14"
+                                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                        <TextBlock Text="{Binding Uin}" FontSize="11"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <Ellipse Width="6" Height="6" Fill="{Binding StatusColor}"
+                                                                 VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                                            Spacing="6" VerticalAlignment="Center">
+                                                    <Button Content="连接"
+                                                            Command="{Binding $parent[vm:MainViewModel].ConnectAccountCommand}"
+                                                            CommandParameter="{Binding}"
+                                                            Padding="8,4" FontSize="11" Background="#5B8C5A"
+                                                            Foreground="White" CornerRadius="4" />
+                                                    <Button Content="断开"
+                                                            Command="{Binding $parent[vm:MainViewModel].DisconnectAccountCommand}"
+                                                            CommandParameter="{Binding}"
+                                                            Padding="8,4" FontSize="11" Background="#C4943C"
+                                                            Foreground="White" CornerRadius="4" />
+                                                    <Button Content="移除"
+                                                            Command="{Binding $parent[vm:MainViewModel].RemoveAccountCommand}"
+                                                            CommandParameter="{Binding}"
+                                                            Padding="8,4" FontSize="11" Background="#C4554D"
+                                                            Foreground="White" CornerRadius="4" />
+                                                </StackPanel>
+                                            </DockPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+
+        <!-- ===== 账号切换浮层 ===== -->
+        <Border Grid.Column="1" Grid.ColumnSpan="2" HorizontalAlignment="Left" VerticalAlignment="Top"
+                Width="220" Margin="0,4,0,0" ZIndex="10"
+                Background="{DynamicResource BgSurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="8"
+                IsVisible="{Binding IsAccountSwitcherOpen}">
+            <ItemsControl ItemsSource="{Binding Accounts}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="models:AccountItem">
+                        <Border Padding="8,6" Classes="contact-item" CornerRadius="6"
+                                PointerPressed="OnAccountClicked" Tag="{Binding}">
+                            <Grid ColumnDefinitions="32,*,Auto" ColumnSpacing="8">
+                                <Grid Grid.Column="0" Width="32" Height="32">
+                                    <Border CornerRadius="16" Background="{Binding AvatarColor}"
+                                            IsVisible="{Binding !AvatarVisible}">
+                                        <TextBlock Text="{Binding Initials}" FontSize="11" Foreground="White"
+                                                   TextAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                    <Border CornerRadius="16" ClipToBounds="True"
+                                            IsVisible="{Binding AvatarVisible}">
+                                        <Image Source="{Binding AvatarBitmap}" Stretch="UniformToFill" />
+                                    </Border>
+                                </Grid>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                    <TextBlock Text="{Binding Nickname}" FontSize="13"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="2" Text="✓" FontSize="13"
+                                           Foreground="{DynamicResource AccentBrush}"
+                                           VerticalAlignment="Center" IsVisible="{Binding IsCurrent}" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </Border>
+    </Grid>
+</Window>
