@@ -222,6 +222,8 @@ public partial class MainWindow : Window
 
         if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
         {
+            // 阻止冒泡到气泡的 OnBubblePointerPressed，否则会叠加弹出消息菜单
+            e.Handled = true;
             OpenFileContextMenu(cell, file);
             return;
         }

@@ -735,21 +735,29 @@ public partial class MainViewModel : ViewModelBase
             if (!string.IsNullOrEmpty(file.Url) && file.Url!.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 local = await _fileCache.DownloadAsync(file.Url, file.Name);
 
-            // 2) get_file 兜底
-            if (local is null && !string.IsNullOrEmpty(file.FileId))
+            var session = _accountManager?.GetSession(conv.AccountId);
+
+            // 2) 直链过期/缺失 → 刷新直链（需签名服务，无签名则失败快速跳过）
+            if (local is null && !string.IsNullOrEmpty(file.FileId) && session is not null)
             {
-                var session = _accountManager?.GetSession(conv.AccountId);
-                if (session is not null)
-                {
-                    var doc = await session.GetFileAsync(file.FileId);
-                    local = await ResolveGetFileAsync(doc, file.Name);
-                }
+                var freshUrl = conv.IsGroup
+                    ? await session.GetGroupFileUrlAsync(conv.TargetId, file.FileId)
+                    : await session.GetPrivateFileUrlAsync(file.FileId);
+                if (!string.IsNullOrEmpty(freshUrl))
+                    local = await _fileCache.DownloadAsync(freshUrl, file.Name);
+            }
+
+            // 3) get_file 兜底（base64/url，需 enableLocalFile2Url 才有 base64）
+            if (local is null && !string.IsNullOrEmpty(file.FileId) && session is not null)
+            {
+                var doc = await session.GetFileAsync(file.FileId);
+                local = await ResolveGetFileAsync(doc, file.Name);
             }
 
             if (local is null)
             {
                 file.State = MessageFileState.Failed;
-                StatusMessage = "文件下载失败（可尝试在 NapCat 开启 enableLocalFile2Url）";
+                StatusMessage = "文件下载失败（需 NapCat 签名服务或开启 enableLocalFile2Url）";
                 return;
             }
 

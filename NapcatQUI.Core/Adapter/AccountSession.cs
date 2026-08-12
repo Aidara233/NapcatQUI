@@ -170,7 +170,58 @@ public class AccountSession : IAsyncDisposable
     /// <summary>取文件下载信息（base64/url），供远程 NapCat 场景下载收到的文件。</summary>
     public async Task<JsonDocument?> GetFileAsync(string fileId)
     {
-        return await CallApiAsync("get_file", new() { ["file_id"] = fileId });
+        // 大文件时 NapCat 端要下载+读盘转 base64，默认 20s 超时不够
+        return _connection != null
+            ? await _connection.SendApiRequestAsync("get_file", new() { ["file_id"] = fileId }, TimeSpan.FromMinutes(5))
+            : null;
+    }
+
+    /// <summary>刷新群文件直链（get_group_file_url，需 NapCat 签名服务）。直链过期时用它拿新链。</summary>
+    public async Task<string?> GetGroupFileUrlAsync(string groupId, string fileId)
+    {
+        if (_connection == null) return null;
+        try
+        {
+            var result = await _connection.SendApiRequestAsync("get_group_file_url", new()
+            {
+                ["group_id"] = groupId,
+                ["file_id"] = fileId
+            });
+            return ExtractFileUrl(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to refresh group file url {FileId}", fileId);
+            return null;
+        }
+    }
+
+    /// <summary>刷新私聊文件直链（get_private_file_url，需 NapCat 签名服务）。直链过期时用它拿新链。</summary>
+    public async Task<string?> GetPrivateFileUrlAsync(string fileId)
+    {
+        if (_connection == null) return null;
+        try
+        {
+            var result = await _connection.SendApiRequestAsync("get_private_file_url", new()
+            {
+                ["file_id"] = fileId
+            });
+            return ExtractFileUrl(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to refresh private file url {FileId}", fileId);
+            return null;
+        }
+    }
+
+    private static string? ExtractFileUrl(JsonDocument? doc)
+    {
+        if (doc == null) return null;
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("data", out var d) || !d.TryGetProperty("url", out var u))
+            return null;
+        return u.ValueKind == System.Text.Json.JsonValueKind.String ? u.GetString() : null;
     }
 
     // ---- 连接管理 ----
