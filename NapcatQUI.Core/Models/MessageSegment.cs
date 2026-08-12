@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -105,8 +106,14 @@ public class MessageSegment
     {
         get
         {
-            if (Type == MessageSegmentType.File && Data.TryGetValue("name", out var n))
-                return n?.ToString();
+            if (Type == MessageSegmentType.File)
+            {
+                // 发送端文件名在 name；接收端 NapCat 把文件名放在 file 字段
+                if (Data.TryGetValue("name", out var n) && !string.IsNullOrEmpty(n?.ToString()))
+                    return n.ToString();
+                if (Data.TryGetValue("file", out var f))
+                    return f?.ToString();
+            }
             return null;
         }
     }
@@ -118,6 +125,36 @@ public class MessageSegment
         {
             if (Type == MessageSegmentType.File && Data.TryGetValue("url", out var u))
                 return u?.ToString();
+            return null;
+        }
+    }
+
+    [JsonIgnore]
+    public string? FileId
+    {
+        get
+        {
+            if (Type == MessageSegmentType.File && Data.TryGetValue("file_id", out var id))
+                return id?.ToString();
+            return null;
+        }
+    }
+
+    [JsonIgnore]
+    public long? FileSize
+    {
+        get
+        {
+            if (Type == MessageSegmentType.File && Data.TryGetValue("file_size", out var s))
+            {
+                return s switch
+                {
+                    long l => l,
+                    int i => i,
+                    string str when long.TryParse(str, out var parsed) => parsed,
+                    _ => null
+                };
+            }
             return null;
         }
     }
@@ -168,6 +205,12 @@ public class MessageSegment
     {
         Type = MessageSegmentType.Reply,
         Data = new() { ["id"] = messageId }
+    };
+
+    public static MessageSegment CreateFile(string path) => new()
+    {
+        Type = MessageSegmentType.File,
+        Data = new() { ["file"] = path, ["name"] = Path.GetFileName(path) }
     };
 
     public override string ToString() => $"[{Type}]{GetSearchableText()}";

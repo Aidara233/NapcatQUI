@@ -214,6 +214,59 @@ public partial class MainWindow : Window
         new ImageViewerWindow(paths, index).Show();
     }
 
+    /// <summary>点击文件卡片：左键下载/打开；右键弹菜单（打开/打开所在文件夹/复制文件名）。</summary>
+    private void OnFileCellPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control cell || cell.DataContext is not MessageDisplayBlock block || block.File is not MessageFile file)
+            return;
+
+        if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
+        {
+            OpenFileContextMenu(cell, file);
+            return;
+        }
+
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && _vm is not null)
+            _ = _vm.HandleFileClickAsync(file);
+    }
+
+    /// <summary>文件卡片右键菜单（闭包捕获 MessageFile，不依赖 DataContext 绑定）</summary>
+    private void OpenFileContextMenu(Control cell, MessageFile file)
+    {
+        var menu = new ContextMenu();
+
+        if (file.IsDone && !string.IsNullOrEmpty(file.LocalPath))
+        {
+            var open = new MenuItem { Header = "打开文件" };
+            open.Click += (_, _) => MainViewModel.OpenLocalFile(file.LocalPath!);
+            menu.Items.Add(open);
+
+            var reveal = new MenuItem { Header = "打开所在文件夹" };
+            reveal.Click += (_, _) => MainViewModel.RevealInFolder(file.LocalPath!);
+            menu.Items.Add(reveal);
+
+            menu.Items.Add(new Separator());
+        }
+
+        var download = new MenuItem { Header = file.IsDone ? "重新下载" : "下载" };
+        download.Click += (_, _) => { if (_vm is not null) _ = _vm.DownloadFileAsync(file); };
+        download.IsEnabled = !file.IsDownloading;
+        menu.Items.Add(download);
+
+        if (!string.IsNullOrEmpty(file.Name))
+        {
+            var copy = new MenuItem { Header = "复制文件名" };
+            copy.Click += async (_, _) =>
+            {
+                if (this.Clipboard is { } cb)
+                    await cb.SetTextAsync(file.Name);
+            };
+            menu.Items.Add(copy);
+        }
+
+        menu.Open(cell);
+    }
+
     /// <summary>点击引用框 → 滚动到被引用消息并高亮（仅左键，右键交给消息菜单）</summary>
     private void OnReplyClicked(object? sender, PointerPressedEventArgs e)
     {

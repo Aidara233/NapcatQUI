@@ -7,7 +7,8 @@ public enum ComposeSegmentKind
 {
     Text,
     At,
-    Image
+    Image,
+    File
 }
 
 /// <summary>
@@ -29,6 +30,15 @@ public partial class ComposeSegment : ObservableObject
     /// <summary>图片段：缩略图（ResolveAsync 异步加载）</summary>
     public MessageImage? Image { get; init; }
 
+    /// <summary>文件段：本地文件路径</summary>
+    public string FilePath { get; init; } = string.Empty;
+
+    /// <summary>文件段：文件名</summary>
+    public string FileName { get; init; } = string.Empty;
+
+    /// <summary>文件段：字节大小</summary>
+    public long FileSize { get; init; }
+
     /// <summary>文字段内容（可直接编辑）</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TextPreview))]
@@ -40,12 +50,16 @@ public partial class ComposeSegment : ObservableObject
     public bool IsText => Kind == ComposeSegmentKind.Text;
     public bool IsAt => Kind == ComposeSegmentKind.At;
     public bool IsImage => Kind == ComposeSegmentKind.Image;
+    public bool IsFile => Kind == ComposeSegmentKind.File;
 
     /// <summary>待发条 ToolTip：图片文件名</summary>
     public string? ImageTip => Image is null ? null : System.IO.Path.GetFileName(Image.Source);
 
     /// <summary>待发条 ToolTip：被 @ 成员</summary>
     public string AtTip => $"成员 {DisplayName} ({UserId})";
+
+    /// <summary>待发条 ToolTip：文件名 + 大小</summary>
+    public string FileTip => FileSize > 0 ? $"{FileName}（{FormatSize(FileSize)}）" : FileName;
 
     /// <summary>待发条文本块显示：空文本时显示"文本"占位，避免出现空白灰块</summary>
     public string TextPreview => string.IsNullOrWhiteSpace(Text) ? "文本" : Text;
@@ -61,5 +75,25 @@ public partial class ComposeSegment : ObservableObject
         var seg = new ComposeSegment(ComposeSegmentKind.Image) { Image = img };
         _ = img.ResolveAsync();
         return seg;
+    }
+
+    public static ComposeSegment CreateFile(string path)
+    {
+        long size = 0;
+        try { size = new System.IO.FileInfo(path).Length; } catch { /* 取不到就不显示大小 */ }
+        return new ComposeSegment(ComposeSegmentKind.File)
+        {
+            FilePath = path,
+            FileName = System.IO.Path.GetFileName(path),
+            FileSize = size
+        };
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024.0).ToString("0.#") + " KB";
+        if (bytes < 1024L * 1024 * 1024) return (bytes / 1024.0 / 1024).ToString("0.#") + " MB";
+        return (bytes / 1024.0 / 1024 / 1024).ToString("0.#") + " GB";
     }
 }

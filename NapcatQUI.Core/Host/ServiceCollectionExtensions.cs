@@ -44,6 +44,12 @@ public static class ServiceCollectionExtensions
             return new ImageCacheService(appDataDir, logger);
         });
 
+        services.AddSingleton(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<FileCacheService>>();
+            return new FileCacheService(appDataDir, logger);
+        });
+
         services.AddSingleton<EventBus>();
 
         services.AddSingleton<AccountManager>();

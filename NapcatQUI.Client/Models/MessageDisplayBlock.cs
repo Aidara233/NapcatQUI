@@ -3,11 +3,12 @@ namespace NapcatQUI.Client.Models;
 public enum MessageDisplayBlockKind
 {
     Text,
-    Image
+    Image,
+    File
 }
 
 /// <summary>
-/// 消息气泡里的一个有序渲染块：文本或图片。按消息段原始顺序排列，
+/// 消息气泡里的一个有序渲染块：文本/图片/文件。按消息段原始顺序排列，
 /// 使「文字-图片-文字」的混排消息能按原顺序显示，而非图片恒在前。
 /// </summary>
 public class MessageDisplayBlock
@@ -22,12 +23,19 @@ public class MessageDisplayBlock
     /// <summary>图片块（与 MessageItem.Images 中的实例一致）</summary>
     public MessageImage? Image { get; init; }
 
+    /// <summary>文件块</summary>
+    public MessageFile? File { get; init; }
+
     public bool IsText => Kind == MessageDisplayBlockKind.Text;
     public bool IsImage => Kind == MessageDisplayBlockKind.Image;
+    public bool IsFile => Kind == MessageDisplayBlockKind.File;
 
     public static MessageDisplayBlock CreateText(string text) =>
         new(MessageDisplayBlockKind.Text) { Text = text };
 
     public static MessageDisplayBlock CreateImage(MessageImage img) =>
         new(MessageDisplayBlockKind.Image) { Image = img };
+
+    public static MessageDisplayBlock CreateFile(MessageFile file) =>
+        new(MessageDisplayBlockKind.File) { File = file };
 }

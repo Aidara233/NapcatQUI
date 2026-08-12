@@ -31,6 +31,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly ConfigManager? _configManager;
     private readonly AccountRepository? _accountRepo;
     private readonly ImageCacheService? _imageCache;
+    private readonly FileCacheService? _fileCache;
 
     /// <summary>账号级头像缓存（url → Bitmap），切换账号时释放</summary>
     private readonly Dictionary<string, Bitmap> _avatarCache = new();
@@ -76,7 +77,8 @@ public partial class MainViewModel : ViewModelBase
         ContactSyncService contactSyncService,
         ConfigManager configManager,
         AccountRepository accountRepo,
-        ImageCacheService imageCache)
+        ImageCacheService imageCache,
+        FileCacheService fileCache)
     {
         _accountManager = accountManager;
         _historyService = historyService;
@@ -84,6 +86,7 @@ public partial class MainViewModel : ViewModelBase
         _configManager = configManager;
         _accountRepo = accountRepo;
         _imageCache = imageCache;
+        _fileCache = fileCache;
 
         StatusMessage = "核心服务已加载";
         SubscribeToCoreEvents();
@@ -563,48 +566,254 @@ public partial class MainViewModel : ViewModelBase
         if (conv is null) return;
         if (!HasComposeContent) return;
 
-        var segments = new List<MessageSegment>();
-        if (SelectedReply is not null && !string.IsNullOrEmpty(SelectedReply.MessageId))
-            segments.Add(MessageSegment.CreateReply(SelectedReply.MessageId));
+        // 文件块走 upload_*_file 作为独立卡片消息，text/@/image 仍合成一条 send_*_msg
+        var contentSegments = new List<MessageSegment>();
+        var contentComposeSegments = new List<ComposeSegment>();
+        var files = new List<ComposeSegment>();
         foreach (var seg in ComposeSegments)
         {
             switch (seg.Kind)
             {
                 case ComposeSegmentKind.Text when !seg.IsEmptyText:
-                    segments.Add(MessageSegment.CreateText(seg.Text));
+                    contentSegments.Add(MessageSegment.CreateText(seg.Text));
+                    contentComposeSegments.Add(seg);
                     break;
                 case ComposeSegmentKind.At:
-                    segments.Add(MessageSegment.CreateAt(seg.UserId));
+                    contentSegments.Add(MessageSegment.CreateAt(seg.UserId));
+                    contentComposeSegments.Add(seg);
                     break;
                 case ComposeSegmentKind.Image:
                     var src = seg.Image?.LocalPath ?? seg.Image?.Source;
                     if (!string.IsNullOrEmpty(src))
-                        segments.Add(MessageSegment.CreateImage(src));
+                    {
+                        contentSegments.Add(MessageSegment.CreateImage(src));
+                        contentComposeSegments.Add(seg);
+                    }
+                    break;
+                case ComposeSegmentKind.File:
+                    if (!string.IsNullOrEmpty(seg.FilePath))
+                        files.Add(seg);
                     break;
             }
         }
 
-        var sent = await SendSegmentsAsync(conv, segments);
-        if (!sent)
+        // 先发文字/@/图片消息（有实际内容才发；回复段只在有正文时附加）
+        if (contentSegments.Count > 0)
         {
-            // 失败不乐观上屏：保留片段，便于重试，不污染会话
-            StatusMessage = "发送失败，请检查网络后重试";
-            return;
+            var segments = new List<MessageSegment>();
+            if (SelectedReply is not null && !string.IsNullOrEmpty(SelectedReply.MessageId))
+                segments.Add(MessageSegment.CreateReply(SelectedReply.MessageId));
+            segments.AddRange(contentSegments);
+
+            var sent = await SendSegmentsAsync(conv, segments);
+            if (!sent)
+            {
+                StatusMessage = "发送失败，请检查网络后重试";
+                return;
+            }
+            var item = BuildOptimisticItem(conv, segments, true);
+            if (SelectedReply is not null)
+            {
+                item.ReplyToMessageId = SelectedReply.MessageId;
+                item.ReplyToItemId = SelectedReply.Id;
+                item.ReplySenderName = SelectedReply.SenderName;
+                item.ReplyPreview = ReplyPreviewText(SelectedReply.Kind, SelectedReply.Text);
+            }
+            AppendToConversation(item, conv);
+
+            // 文字部分已发出，从待发条移除，避免文件上传失败时重复发送
+            foreach (var seg in contentComposeSegments)
+                ComposeSegments.Remove(seg);
+            SelectedReply = null; // 引用已随文字消息发出
         }
 
-        // 只有发送成功才乐观上屏（NapCat 回声会带真实 message_id，走 IsSentBySelf 去重）
-        var item = BuildOptimisticItem(conv, segments, true);
-        if (SelectedReply is not null)
+        // 再按顺序上传文件，各自作为独立卡片消息
+        foreach (var fileSeg in files)
         {
-            item.ReplyToMessageId = SelectedReply.MessageId;
-            item.ReplyToItemId = SelectedReply.Id;
-            item.ReplySenderName = SelectedReply.SenderName;
-            item.ReplyPreview = ReplyPreviewText(SelectedReply.Kind, SelectedReply.Text);
+            var ok = await UploadFileAsync(conv, fileSeg.FilePath, fileSeg.FileName);
+            if (!ok)
+            {
+                StatusMessage = $"文件「{fileSeg.FileName}」发送失败";
+                EnsureTextAnchor(); // 保留未发文件块，同时保证仍可输入文字
+                return;
+            }
+            var fileItem = BuildOptimisticFileItem(conv, fileSeg.FilePath, fileSeg.FileName, fileSeg.FileSize);
+            AppendToConversation(fileItem, conv);
+            ComposeSegments.Remove(fileSeg);
         }
-        AppendToConversation(item, conv);
 
         SelectedReply = null;
         ResetComposeSegments();
+    }
+
+    /// <summary>待发条里没有文本块时补一个空文本块（文件上传失败后仍能继续输入）</summary>
+    private void EnsureTextAnchor()
+    {
+        if (ComposeSegments.Any(s => s.Kind == ComposeSegmentKind.Text)) return;
+        var block = ComposeSegment.CreateText();
+        ComposeSegments.Add(block);
+        _activeTextBlock = block;
+        OnPropertyChanged(nameof(ComposerText));
+    }
+
+    private async Task<bool> UploadFileAsync(ConversationItem conv, string filePath, string fileName)
+    {
+        var session = _accountManager?.GetSession(conv.AccountId);
+        if (session is null) return false;
+        try
+        {
+            var type = conv.IsGroup ? MessageType.Group : MessageType.Private;
+            return await session.UploadFileAsync(conv.TargetId, type, filePath, fileName);
+        }
+        catch (Exception ex)
+        {
+            Program.WriteCrashLog("UploadFileAsync", ex);
+            return false;
+        }
+    }
+
+    /// <summary>构建乐观文件卡片气泡（本地文件已就绪，可直接打开）</summary>
+    private MessageItem BuildOptimisticFileItem(ConversationItem conv, string filePath, string fileName, long size)
+    {
+        var file = new MessageFile
+        {
+            Name = fileName,
+            Size = size,
+            LocalPath = filePath,
+            State = MessageFileState.Done
+        };
+        var item = new MessageItem
+        {
+            ConversationId = conv.Id,
+            SenderId = CurrentAccount?.Uin ?? "",
+            SenderName = CurrentAccount?.Nickname ?? "我",
+            SenderInitials = CurrentAccount?.Initials ?? "我",
+            AvatarColor = CurrentAccount?.AvatarColor ?? "#C4873C",
+            Text = $"[文件] {fileName}",
+            Time = DateTime.Now.ToString("HH:mm"),
+            Timestamp = DateTimeOffset.Now,
+            IsMine = true,
+            Kind = MessageKind.File,
+            IsGroup = conv.IsGroup,
+            StatusText = "✓✓",
+            FileName = fileName,
+            FileSize = file.FormattedSize
+        };
+        item.RenderBlocks.Add(MessageDisplayBlock.CreateFile(file));
+        return item;
+    }
+
+    /// <summary>
+    /// 点击文件卡片：未下载则下载，已下载则用系统默认程序打开。
+    /// </summary>
+    public async Task HandleFileClickAsync(MessageFile file)
+    {
+        if (file.IsDownloading) return;
+
+        if (!string.IsNullOrEmpty(file.LocalPath) && file.IsDone)
+        {
+            OpenLocalFile(file.LocalPath!);
+            return;
+        }
+
+        await DownloadFileAsync(file);
+    }
+
+    /// <summary>下载收到文件：优先直链 url，兜底 get_file 的 base64 / http url。</summary>
+    public async Task DownloadFileAsync(MessageFile file)
+    {
+        if (file.IsDownloading || _fileCache is null) return;
+        var conv = SelectedConversation;
+        if (conv is null) return;
+
+        file.State = MessageFileState.Downloading;
+        try
+        {
+            string? local = null;
+
+            // 1) 消息自带腾讯直链
+            if (!string.IsNullOrEmpty(file.Url) && file.Url!.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                local = await _fileCache.DownloadAsync(file.Url, file.Name);
+
+            // 2) get_file 兜底
+            if (local is null && !string.IsNullOrEmpty(file.FileId))
+            {
+                var session = _accountManager?.GetSession(conv.AccountId);
+                if (session is not null)
+                {
+                    var doc = await session.GetFileAsync(file.FileId);
+                    local = await ResolveGetFileAsync(doc, file.Name);
+                }
+            }
+
+            if (local is null)
+            {
+                file.State = MessageFileState.Failed;
+                StatusMessage = "文件下载失败（可尝试在 NapCat 开启 enableLocalFile2Url）";
+                return;
+            }
+
+            file.LocalPath = local;
+            file.State = MessageFileState.Done;
+        }
+        catch (Exception ex)
+        {
+            Program.WriteCrashLog("DownloadFileAsync", ex);
+            file.State = MessageFileState.Failed;
+        }
+    }
+
+    /// <summary>解析 get_file 返回：优先 base64，其次 http url。返回本地路径或 null。</summary>
+    private async Task<string?> ResolveGetFileAsync(System.Text.Json.JsonDocument? doc, string fileName)
+    {
+        if (doc is null || _fileCache is null) return null;
+        var data = doc.RootElement;
+        if (!data.TryGetProperty("data", out var d)) return null;
+
+        if (d.TryGetProperty("base64", out var b64) && b64.ValueKind == System.Text.Json.JsonValueKind.String &&
+            !string.IsNullOrEmpty(b64.GetString()))
+            return await _fileCache.DecodeBase64Async(b64.GetString()!, fileName);
+
+        if (d.TryGetProperty("url", out var url) && url.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            var u = url.GetString();
+            if (!string.IsNullOrEmpty(u) && u!.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                return await _fileCache.DownloadAsync(u, fileName);
+        }
+
+        return null;
+    }
+
+    /// <summary>用系统默认程序打开本地文件</summary>
+    public static void OpenLocalFile(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Program.WriteCrashLog("OpenLocalFile", ex);
+        }
+    }
+
+    /// <summary>在资源管理器中定位并选中本地文件</summary>
+    public static void RevealInFolder(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Program.WriteCrashLog("RevealInFolder", ex);
+        }
     }
 
     private bool CanSendMessage() =>
@@ -871,6 +1080,50 @@ public partial class MainViewModel : ViewModelBase
 
         // ComposeSegments.CollectionChanged 会自动刷新发送按钮与待发内容可见性
         ComposeSegments.Add(ComposeSegment.CreateImage(path, _imageCache));
+        return true;
+    }
+
+    /// <summary>选择本地文件加入待发片段（点发送时作为独立文件卡片消息发送）</summary>
+    [RelayCommand]
+    private async Task SendFiles()
+    {
+        var conv = SelectedConversation;
+        if (conv is null || StorageProvider is null) return;
+
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "选择要发送的文件",
+            AllowMultiple = true
+        });
+        if (files.Count == 0) return;
+
+        var added = 0;
+        foreach (var f in files)
+        {
+            var p = f.TryGetLocalPath();
+            if (string.IsNullOrEmpty(p)) continue;
+            if (AddFileSegment(p)) added++;
+        }
+
+        StatusMessage = added > 0
+            ? $"已添加 {added} 个文件，可调整顺序后发送"
+            : "所选文件无法添加（文件不可读）";
+    }
+
+    /// <summary>把本地文件加入待发片段末尾；无效返回 false</summary>
+    private bool AddFileSegment(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists) return false;
+        }
+        catch
+        {
+            return false;
+        }
+
+        ComposeSegments.Add(ComposeSegment.CreateFile(path));
         return true;
     }
 
@@ -2025,7 +2278,14 @@ public partial class MainViewModel : ViewModelBase
                         blocks.Add(MessageDisplayBlock.CreateImage(new MessageImage(src, null, _imageCache)));
                     break;
                 case MessageSegmentType.File:
-                    text.Append($"[文件] {seg.FileName ?? ""}");
+                    Flush();
+                    blocks.Add(MessageDisplayBlock.CreateFile(new MessageFile
+                    {
+                        Name = seg.FileName ?? "",
+                        Size = seg.FileSize ?? 0,
+                        FileId = seg.FileId,
+                        Url = seg.FileUrl
+                    }));
                     break;
                 case MessageSegmentType.Record:
                     text.Append("[语音]");
@@ -2060,7 +2320,7 @@ public partial class MainViewModel : ViewModelBase
             return (MessageKind.Text, null, null, null, null, fallbackContent, new List<string>());
 
         var kind = MessageKind.Text;
-        string? reply = null, fileName = null, imageCaption = null;
+        string? reply = null, fileName = null, fileSize = null, imageCaption = null;
         var text = new StringBuilder();
         var images = new List<string>();
         var hasImage = false;
@@ -2091,6 +2351,7 @@ public partial class MainViewModel : ViewModelBase
                 case MessageSegmentType.File:
                     kind = MessageKind.File;
                     fileName = seg.FileName;
+                    fileSize = seg.FileSize?.ToString();
                     text.Append("[文件] ");
                     break;
                 case MessageSegmentType.Reply:
@@ -2131,7 +2392,7 @@ public partial class MainViewModel : ViewModelBase
             display = fallbackContent;
         }
 
-        return (kind, reply, fileName, null, imageCaption, display, images);
+        return (kind, reply, fileName, fileSize, imageCaption, display, images);
     }
 
     // ---- 工具 ----

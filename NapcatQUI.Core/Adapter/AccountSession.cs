@@ -135,6 +135,44 @@ public class AccountSession : IAsyncDisposable
             : null;
     }
 
+    /// <summary>
+    /// 上传并发送一个文件（作为独立文件卡片消息）。file 用 base64:// 内嵌，
+    /// 因为 NapCat 常在远程服务器，本地路径读不到（和图片同理）。
+    /// </summary>
+    public async Task<bool> UploadFileAsync(string targetId, MessageType type, string filePath, string fileName)
+    {
+        if (_connection == null) return false;
+        try
+        {
+            if (!File.Exists(filePath)) return false;
+            var bytes = File.ReadAllBytes(filePath);
+
+            var action = type == MessageType.Group ? "upload_group_file" : "upload_private_file";
+            var key = type == MessageType.Group ? "group_id" : "user_id";
+            // 大文件 base64 上传在 NapCat 端解码+上传后才回包，20s 默认超时不够
+            var result = await _connection.SendApiRequestAsync(action, new()
+            {
+                [key] = targetId,
+                ["file"] = "base64://" + Convert.ToBase64String(bytes),
+                ["name"] = fileName
+            }, TimeSpan.FromMinutes(5));
+            return result is not null &&
+                   result.RootElement.TryGetProperty("status", out var st) &&
+                   st.GetString() == "ok";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to upload file {Name} to {TargetId}", fileName, targetId);
+            return false;
+        }
+    }
+
+    /// <summary>取文件下载信息（base64/url），供远程 NapCat 场景下载收到的文件。</summary>
+    public async Task<JsonDocument?> GetFileAsync(string fileId)
+    {
+        return await CallApiAsync("get_file", new() { ["file_id"] = fileId });
+    }
+
     // ---- 连接管理 ----
 
     /// <summary>

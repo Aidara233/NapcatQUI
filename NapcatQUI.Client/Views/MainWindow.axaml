@@ -315,6 +315,21 @@
                                                                                    Foreground="{DynamicResource TextTertiaryBrush}" />
                                                                     </StackPanel>
                                                                 </Grid>
+                                                                <!-- 文件块：卡片（图标+名+大小+状态），点击下载/打开 -->
+                                                                <Border Margin="0,2" Padding="10,8" Background="#00000010"
+                                                                        CornerRadius="6" IsVisible="{Binding IsFile}"
+                                                                        Cursor="Hand" PointerPressed="OnFileCellPointerPressed">
+                                                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                                        <TextBlock Text="📄" FontSize="20" VerticalAlignment="Center" />
+                                                                        <StackPanel Spacing="1" VerticalAlignment="Center">
+                                                                            <TextBlock Text="{Binding File.Name}" FontSize="13"
+                                                                                       TextTrimming="CharacterEllipsis" MaxWidth="260"
+                                                                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                                            <TextBlock Text="{Binding File.SubLine}" FontSize="11"
+                                                                                       Foreground="{DynamicResource TextTertiaryBrush}" />
+                                                                        </StackPanel>
+                                                                    </StackPanel>
+                                                                </Border>
                                                             </Grid>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
@@ -418,6 +433,15 @@
                                                             <Border Background="#00000010" CornerRadius="4" />
                                                             <Image Source="{Binding Image.Bitmap}" Stretch="Uniform" />
                                                         </Grid>
+                                                        <!-- 文件块 -->
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding IsFile}"
+                                                                    VerticalAlignment="Center" ToolTip.Tip="{Binding FileTip}">
+                                                            <TextBlock Text="📄" FontSize="16" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding FileName}" FontSize="12" MaxWidth="140"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center"
+                                                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                        </StackPanel>
                                                     </Grid>
                                                 </Border>
                                             </StackPanel>
@@ -445,6 +469,10 @@
                                     Command="{Binding OpenAtPickerCommand}"
                                     IsVisible="{Binding IsSelectedGroup}"
                                     ToolTip.Tip="在群聊中 @ 成员"
+                                    Background="Transparent" FontSize="12" CornerRadius="6" Padding="10,4" />
+                            <Button DockPanel.Dock="Left" Content="📎 文件"
+                                    Command="{Binding SendFilesCommand}"
+                                    ToolTip.Tip="发送文件（作为文件卡片消息）"
                                     Background="Transparent" FontSize="12" CornerRadius="6" Padding="10,4" />
                             <Button DockPanel.Dock="Left" Content="📷 图片"
                                     Command="{Binding SendImagesCommand}"
