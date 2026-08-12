@@ -22,11 +22,16 @@ public class AccountSession : IAsyncDisposable
     private NapCatConnection? _connection;
     private Task? _reconnectTask;
 
+    /// <summary>历史补偿并发上限：NapCat 同源多会话并行拉取，控一下别把通道打爆</summary>
+    private readonly SemaphoreSlim _catchUpThrottle = new(6, 6);
+
     public string AccountId => _account.Uin;
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
 
     /// <summary>消息到达事件</summary>
     public event Func<Message, Task>? OnMessage;
+    /// <summary>启动/重连后的历史补偿全部完成时触发，UI 据此重算未读数</summary>
+    public event Func<Task>? OnHistoryCaughtUp;
     public event Func<ConnectionState, Task>? OnConnectionStateChanged;
     public event Func<ContactEntity, Task>? OnContactUpdated;
     public event Func<GroupEntity, Task>? OnGroupUpdated;
@@ -161,6 +166,7 @@ public class AccountSession : IAsyncDisposable
                 SetState(ConnectionState.Connected);
                 await SyncContactsAsync();
                 await SyncGroupsAsync();
+                StartHistoryCatchUp(ct);
 
                 _logger.LogInformation("Account {Uin} connected", _account.Uin);
 
@@ -192,6 +198,50 @@ public class AccountSession : IAsyncDisposable
 
             delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 1.5, 30));
         }
+    }
+
+    /// <summary>
+    /// 连接建立后后台跑全量历史补偿：对每个好友/群拉最近 ~100 条入库（未读由此得出）。
+    /// 有并发上限，不阻塞连接循环；全部完成后触发 OnHistoryCaughtUp 让 UI 重算未读。
+    /// 会话停止时随 _cts 取消。
+    /// </summary>
+    private void StartHistoryCatchUp(CancellationToken ct)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var targets = new List<(string TargetId, MessageType Type)>();
+                foreach (var c in await _contactRepo.GetFriendsAsync(_account.Uin))
+                    targets.Add((c.UserId, MessageType.Private));
+                foreach (var g in await _groupRepo.GetGroupsAsync(_account.Uin))
+                    targets.Add((g.GroupId, MessageType.Group));
+
+                if (targets.Count == 0) return;
+
+                var tasks = targets.Select(async t =>
+                {
+                    await _catchUpThrottle.WaitAsync(ct);
+                    try
+                    {
+                        await CatchUpHistoryAsync(t.TargetId, t.Type, 100, ct);
+                    }
+                    finally
+                    {
+                        _catchUpThrottle.Release();
+                    }
+                });
+                await Task.WhenAll(tasks);
+
+                if (OnHistoryCaughtUp != null)
+                    await OnHistoryCaughtUp.Invoke();
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "History catch-up failed for {Uin}", _account.Uin);
+            }
+        }, ct);
     }
 
     /// <summary>
@@ -378,7 +428,14 @@ public class AccountSession : IAsyncDisposable
         }
     }
 
-    public async Task<List<Message>> FetchHistoryAsync(string targetId, MessageType type, int count = 50)
+    // ---- 历史拉取（分页补偿 / 手动翻页共用一套） ----
+
+    /// <summary>
+    /// 单页历史：message_seq="0" 取最新一批，否则以该短 message_id 为起点往回翻。
+    /// 返回按时间从旧到新。历史是按会话拉的，接收者已知，这里强制 TargetId=targetId ——
+    /// 这是自发私聊消息能落对会话的关键（NapCat 事件里没有接收者，只能靠历史补偿定位）。
+    /// </summary>
+    private async Task<List<Message>> FetchHistoryPageAsync(string targetId, MessageType type, string messageSeq, int count)
     {
         if (_connection == null) return new();
         var action = type == MessageType.Group ? "get_group_msg_history" : "get_friend_msg_history";
@@ -389,9 +446,10 @@ public class AccountSession : IAsyncDisposable
             var result = await _connection.SendApiRequestAsync(action, new()
             {
                 [key] = targetId,
-                ["count"] = count
+                ["message_seq"] = messageSeq,
+                ["count"] = count,
+                ["reverse_order"] = true
             });
-
             if (result == null) return new();
 
             var messages = new List<Message>();
@@ -403,27 +461,100 @@ public class AccountSession : IAsyncDisposable
             {
                 foreach (var m in msgArray.EnumerateArray())
                 {
-                    var raw = m.GetRawText();
-                    var msg = _parser.Parse(raw);
+                    var msg = _parser.Parse(m.GetRawText());
                     if (msg != null)
                     {
                         msg.AccountId = _account.Uin;
+                        msg.TargetId = targetId;
                         messages.Add(msg);
                     }
                 }
             }
 
+            // 接口按新→旧返回，转成旧→新（历史界面最上面是最早的）
             messages.Reverse();
-            foreach (var msg in messages)
-                await SaveMessageAsync(msg);
-
             return messages;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to fetch history for {TargetId}", targetId);
+            _logger.LogError(ex, "Failed to fetch history page for {TargetId} seq={Seq}", targetId, messageSeq);
             return new();
         }
+    }
+
+    /// <summary>
+    /// 启动/重连补偿：从最新一批往回翻，逐批入库，直到某页全部已知（追上本地）或达到条数上限。
+    /// 返回本次真正新增（未读增量）的条数。单页 20（QQNT 原生上限，count 设大不可靠）。
+    /// </summary>
+    public async Task<int> CatchUpHistoryAsync(string targetId, MessageType type, int maxMessages = 100, CancellationToken ct = default)
+    {
+        const int pageSize = 20;
+        var maxPages = Math.Max(1, maxMessages / pageSize);
+        var inserted = 0;
+        string? seq = null;
+
+        for (var page = 0; page < maxPages; page++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pageMsgs = await FetchHistoryPageAsync(targetId, type, seq ?? "0", pageSize);
+            if (pageMsgs.Count == 0) break; // 没有更早的了
+
+            var pageInserted = 0;
+            foreach (var msg in pageMsgs)
+            {
+                if (await SaveMessageAsync(msg))
+                    pageInserted++;
+            }
+            inserted += pageInserted;
+
+            // 本页一条都没新增 → 已追上本地已有；不满整页 → 到历史起点
+            if (pageInserted == 0 || pageMsgs.Count < pageSize) break;
+            if (inserted >= maxMessages) break;
+
+            // 下一批以本页最老一条为起点往回翻（reverse_order=true）
+            seq = pageMsgs[0].MessageId;
+            if (string.IsNullOrEmpty(seq)) break; // 起点消息无 id，无法继续翻页
+        }
+
+        return inserted;
+    }
+
+    /// <summary>打开一个零本地历史的会话时兜底拉一份（最多 count 条），入库并返回。</summary>
+    public async Task<List<Message>> FetchHistoryAsync(string targetId, MessageType type, int count = 50)
+    {
+        var maxMessages = Math.Max(count, 20);
+        var maxPages = Math.Max(1, maxMessages / 20);
+        var collected = new List<Message>();
+        string? seq = null;
+
+        for (var page = 0; page < maxPages; page++)
+        {
+            var pageMsgs = await FetchHistoryPageAsync(targetId, type, seq ?? "0", 20);
+            if (pageMsgs.Count == 0) break;
+            collected.AddRange(pageMsgs);
+            if (pageMsgs.Count < 20 || collected.Count >= maxMessages) break;
+            seq = pageMsgs[0].MessageId;
+            if (string.IsNullOrEmpty(seq)) break;
+        }
+
+        foreach (var msg in collected)
+            await SaveMessageAsync(msg);
+
+        collected.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        return collected;
+    }
+
+    /// <summary>
+    /// 手动"加载更早"：以 beforeMessageId（该会话最老一条的短 id）为起点往回翻一页并入库。
+    /// 返回旧→新的更早消息；返回空表示已到最早。reverse_order 会把起点消息也带回，
+    /// 由调用方按 MessageId 去重。
+    /// </summary>
+    public async Task<List<Message>> FetchOlderMessagesAsync(string targetId, MessageType type, string beforeMessageId, int count = 20)
+    {
+        var msgs = await FetchHistoryPageAsync(targetId, type, beforeMessageId, count);
+        foreach (var msg in msgs)
+            await SaveMessageAsync(msg);
+        return msgs;
     }
 
     // ---- 内部 ----
@@ -470,17 +601,24 @@ public class AccountSession : IAsyncDisposable
         }
     }
 
-    private async Task SaveMessageAsync(Message msg)
+    /// <summary>入库一条消息，返回是否真正新增（已存在则 false）。历史补偿靠它累计新增数。</summary>
+    private async Task<bool> SaveMessageAsync(Message msg)
     {
         try
         {
-            // 私聊自发消息的回声：事件里没有接收者，TargetId 落在自己身上，
-            // 已由发送路径用正确 TargetId 入库，这里跳过避免脏数据
+            // 私聊自发消息：NapCat 事件里没有接收者（无 target_id），TargetId 回落成自己。
+            // 本程序发出的回声已由发送路径用正确 TargetId 入库，message_id 查得到 → 跳过即可。
+            // 其他设备发的（message_id 查不到）实时无法定位接收者，跳过等历史补偿按会话捞回。
             if (msg.IsSentBySelf && msg.Type == MessageType.Private && msg.TargetId == msg.AccountId)
-                return;
+            {
+                if (await _messageRepo.ExistsAsync(_account.Uin, msg.MessageId))
+                    return false;
+                _logger.LogDebug("Self-sent private message {MessageId} has no recipient in event, deferring to history catch-up", msg.MessageId);
+                return false;
+            }
 
             if (await _messageRepo.ExistsAsync(_account.Uin, msg.MessageId))
-                return;
+                return false;
 
             var entity = new MessageEntity
             {
@@ -505,10 +643,12 @@ public class AccountSession : IAsyncDisposable
             };
 
             await _messageRepo.InsertOrIgnoreAsync(entity);
+            return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to save message {MessageId}", msg.MessageId);
+            return false;
         }
     }
 
@@ -584,5 +724,6 @@ public class AccountSession : IAsyncDisposable
             await _connection.DisposeAsync();
         }
         _cts?.Dispose();
+        _catchUpThrottle.Dispose();
     }
 }

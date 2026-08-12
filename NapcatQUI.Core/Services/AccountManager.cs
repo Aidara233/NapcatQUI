@@ -26,6 +26,9 @@ public class AccountManager : IAsyncDisposable
     public event Func<string, Task>? OnContactsChanged;
     public event Func<string, Task>? OnGroupsChanged;
 
+    /// <summary>该账号启动/重连后的历史补偿全部完成，UI 据此重算未读数</summary>
+    public event Func<string, Task>? OnHistoryCaughtUp;
+
     public IReadOnlyDictionary<string, AccountSession> Sessions => _sessions;
     public IEnumerable<string> AccountIds => _sessions.Keys;
 
@@ -131,6 +134,19 @@ public class AccountManager : IAsyncDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in OnMessage handler for {Uin}", account.Uin);
+            }
+            return Task.CompletedTask;
+        };
+
+        session.OnHistoryCaughtUp += () =>
+        {
+            try
+            {
+                _ = (OnHistoryCaughtUp?.Invoke(account.Uin) ?? Task.CompletedTask);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in OnHistoryCaughtUp handler for {Uin}", account.Uin);
             }
             return Task.CompletedTask;
         };
