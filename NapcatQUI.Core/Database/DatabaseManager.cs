@@ -62,9 +62,12 @@ public class DatabaseManager
         await _connection.CreateTableAsync<GroupMemberEntity>();
         await _connection.CreateTableAsync<MessageEntity>();
         await _connection.CreateTableAsync<FileRecordEntity>();
+        await _connection.CreateTableAsync<ReadStateEntity>();
 
         await _connection.ExecuteAsync(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_message_unique ON message(AccountId, MessageId);");
+        await _connection.ExecuteAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_read_state_unique ON read_state(AccountId, TargetId, MessageType);");
         await _connection.ExecuteAsync(
             "CREATE INDEX IF NOT EXISTS idx_message_target_time ON message(AccountId, TargetId, Timestamp);");
         await _connection.ExecuteAsync(

@@ -97,6 +97,50 @@ public class MessageRepository
     }
 
     /// <summary>
+    /// 每个会话的未读数：未读 = Timestamp 晚于 read_state 已读标记的消息数；
+    /// 没有已读标记（从未打开过）则该会话全部消息都算未读（真实客户端行为）。
+    /// </summary>
+    public async Task<Dictionary<(string TargetId, int MessageType), int>> GetUnreadCountsAsync(string accountId)
+    {
+        var conn = await _db.GetConnectionAsync();
+        var rows = await conn.QueryAsync<UnreadCountRow>(@"
+            SELECT m.TargetId, m.MessageType, COUNT(*) AS Cnt
+            FROM message m
+            LEFT JOIN read_state r
+                ON r.AccountId = m.AccountId AND r.TargetId = m.TargetId AND r.MessageType = m.MessageType
+            WHERE m.AccountId = ? AND m.MessageType IN (0, 1)
+              AND (r.LastReadTimestamp IS NULL OR m.Timestamp > r.LastReadTimestamp)
+            GROUP BY m.TargetId, m.MessageType", accountId);
+
+        var dict = new Dictionary<(string, int), int>();
+        foreach (var row in rows)
+            dict[(row.TargetId, row.MessageType)] = row.Cnt;
+        return dict;
+    }
+
+    /// <summary>某会话最新一条消息的时间（已读标记用）。无消息返回 null。</summary>
+    public async Task<string?> GetMaxTimestampAsync(string accountId, string targetId, int messageType)
+    {
+        var conn = await _db.GetConnectionAsync();
+        // ISO "o" 字符串字典序 == 时间序，MAX 直接用
+        return await conn.ExecuteScalarAsync<string?>(
+            "SELECT MAX(Timestamp) FROM message WHERE AccountId = ? AND TargetId = ? AND MessageType = ?",
+            accountId, targetId, messageType);
+    }
+
+    public async Task SetLastReadAsync(string accountId, string targetId, int messageType, string timestamp)
+    {
+        var conn = await _db.GetConnectionAsync();
+        // 真 upsert：同 ContactRepository，不用 InsertOrReplaceAsync（Id=0 会覆盖前一条）
+        await conn.ExecuteAsync(@"
+            INSERT INTO read_state (AccountId, TargetId, MessageType, LastReadTimestamp)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(AccountId, TargetId, MessageType) DO UPDATE SET
+                LastReadTimestamp = excluded.LastReadTimestamp",
+            accountId, targetId, messageType, timestamp);
+    }
+
+    /// <summary>
     /// 把用户输入转成安全的 FTS5 短语查询：去掉所有语法字符后整体加引号，
     /// 防止用户输入引号 / AND / NOT / 括号等导致 MATCH 语法错误
     /// </summary>
@@ -121,4 +165,12 @@ public class ConversationSummary
     public string SenderName { get; set; } = string.Empty;
     public string SenderId { get; set; } = string.Empty;
     public string Timestamp { get; set; } = string.Empty;
+}
+
+/// <summary>未读数查询结果行：某会话的未读消息数</summary>
+public class UnreadCountRow
+{
+    public string TargetId { get; set; } = string.Empty;
+    public int MessageType { get; set; }
+    public int Cnt { get; set; }
 }

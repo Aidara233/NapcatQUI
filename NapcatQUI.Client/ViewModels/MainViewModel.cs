@@ -263,6 +263,22 @@ public partial class MainViewModel : ViewModelBase
         SelectedAtMembers.Clear();
         CurrentPage = "chat";
         _ = LoadConversationMessagesAsync(value);
+        _ = MarkConversationReadAsync(value);
+    }
+
+    /// <summary>打开会话即标记已读：把已读标记推进到该会话最新一条消息的时间，未读跨重启保留</summary>
+    private async Task MarkConversationReadAsync(ConversationItem conv)
+    {
+        if (_historyService is null || CurrentAccount is null) return;
+        try
+        {
+            await _historyService.MarkConversationReadAsync(
+                conv.AccountId, conv.TargetId, conv.IsGroup ? MessageType.Group : MessageType.Private);
+        }
+        catch (Exception ex)
+        {
+            Program.WriteCrashLog("MarkConversationReadAsync", ex);
+        }
     }
 
     partial void OnCurrentAccountChanged(AccountItem? value)
@@ -361,8 +377,8 @@ public partial class MainViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 加载更早的历史消息（顶部按钮）。只从本地 DB 分页——NapCat 的 message_seq 是
-    /// 前向游标，无法取更早批次，所以新会话的历史范围以"打开时拉的那批"为上限。
+    /// 加载更早的历史消息（顶部按钮）。先翻本地库（免费瞬时），本地翻空后走 NapCat：
+    /// 以最老一条有真实 id 的消息为游标往回翻一页（见 AccountSession.FetchOlderMessagesAsync）。
     /// </summary>
     [RelayCommand]
     private async Task LoadEarlierMessages()
@@ -376,37 +392,94 @@ public partial class MainViewModel : ViewModelBase
             var oldest = cache[0];
             var list = await _historyService.GetHistoryAsync(conv.AccountId, conv.TargetId, 60, oldest.Timestamp.ToString("o"));
 
-            if (list.Count == 0)
+            if (list.Count > 0)
             {
-                _hasMoreHistory[conv.Id] = false; // 本地没有更早的了
+                var atMap = TryGetMemberNameMap(conv);
+                var items = list.Select(e => ToMessageItem(e, conv, atMap)).ToList();
+                items.Reverse(); // 倒序转正
+
+                // 这批内部的时间分隔
+                MessageItem? prevMsg = null;
+                foreach (var m in items)
+                {
+                    m.UpdateTimeDivider(prevMsg?.Timestamp);
+                    prevMsg = m;
+                }
+
+                // 预插到 cache 头部；修正边界分隔（原最老一条与新批次的衔接）
+                cache.InsertRange(0, items);
+                if (cache.Count > items.Count)
+                    cache[items.Count].UpdateTimeDivider(items[^1].Timestamp);
+
+                // 预插到 Messages 头部（代码后置 OnMessagesChanged 检测到顶部插入就不滚底）
+                for (int i = 0; i < items.Count; i++)
+                    Messages.Insert(i, items[i]);
+
+                SetGifsVisible(items, true);
+                // 本地还有或 NapCat 还有更早，留按钮让下一次点击继续判定
+                _hasMoreHistory[conv.Id] = true;
+                OnPropertyChanged(nameof(HasMoreMessages));
+                return;
+            }
+
+            // 本地翻空 → 走 NapCat 往前翻
+            var session = _accountManager?.GetSession(conv.AccountId);
+            if (session is null)
+            {
+                _hasMoreHistory[conv.Id] = false;
+                OnPropertyChanged(nameof(HasMoreMessages));
+                return;
+            }
+
+            // 游标取最老一条有真实 id 的消息（系统通知等无 id，跳过）
+            var cursor = cache.FirstOrDefault(m => m.MessageId.Length > 0);
+            if (cursor is null)
+            {
+                _hasMoreHistory[conv.Id] = false;
+                OnPropertyChanged(nameof(HasMoreMessages));
+                return;
+            }
+
+            var type = conv.IsGroup ? MessageType.Group : MessageType.Private;
+            var older = await session.FetchOlderMessagesAsync(conv.TargetId, type, cursor.MessageId, 20);
+            if (older.Count == 0)
+            {
+                _hasMoreHistory[conv.Id] = false;
                 OnPropertyChanged(nameof(HasMoreMessages));
                 StatusMessage = "已是最早的消息";
                 return;
             }
 
-            var atMap = TryGetMemberNameMap(conv);
-            var items = list.Select(e => ToMessageItem(e, conv, atMap)).ToList();
-            items.Reverse(); // 倒序转正
-
-            // 这批内部的时间分隔
-            MessageItem? prevMsg = null;
-            foreach (var m in items)
+            // reverse_order 会把游标消息也带回，去掉已显示过的
+            var known = new HashSet<string>(cache.Select(m => m.MessageId).Where(id => id.Length > 0));
+            var atMap2 = TryGetMemberNameMap(conv);
+            var items2 = older
+                .Where(m => string.IsNullOrEmpty(m.MessageId) || !known.Contains(m.MessageId))
+                .Select(m => ToMessageItem(m, conv, atMap2))
+                .ToList();
+            if (items2.Count == 0)
             {
-                m.UpdateTimeDivider(prevMsg?.Timestamp);
-                prevMsg = m;
+                _hasMoreHistory[conv.Id] = false;
+                OnPropertyChanged(nameof(HasMoreMessages));
+                return;
             }
 
-            // 预插到 cache 头部；修正边界分隔（原最老一条与新批次的衔接）
-            cache.InsertRange(0, items);
-            if (cache.Count > items.Count)
-                cache[items.Count].UpdateTimeDivider(items[^1].Timestamp);
+            MessageItem? prev = null;
+            foreach (var m in items2)
+            {
+                m.UpdateTimeDivider(prev?.Timestamp);
+                prev = m;
+            }
 
-            // 预插到 Messages 头部（代码后置 OnMessagesChanged 检测到顶部插入就不滚底）
-            for (int i = 0; i < items.Count; i++)
-                Messages.Insert(i, items[i]);
+            cache.InsertRange(0, items2);
+            if (cache.Count > items2.Count)
+                cache[items2.Count].UpdateTimeDivider(items2[^1].Timestamp);
 
-            SetGifsVisible(items, true);
-            _hasMoreHistory[conv.Id] = list.Count >= 60; // 满批说明可能还有更早
+            for (int i = 0; i < items2.Count; i++)
+                Messages.Insert(i, items2[i]);
+
+            SetGifsVisible(items2, true);
+            _hasMoreHistory[conv.Id] = older.Count >= 20; // 满页说明可能还有更早
             OnPropertyChanged(nameof(HasMoreMessages));
         }
         catch (Exception ex)
@@ -1064,6 +1137,9 @@ public partial class MainViewModel : ViewModelBase
         var summaries = _historyService is null
             ? new List<ConversationSummary>()
             : await _historyService.GetConversationSummariesAsync(accountId);
+        var unreadCounts = _historyService is null
+            ? new Dictionary<(string, int), int>()
+            : await _historyService.GetUnreadCountsAsync(accountId);
 
         var summaryByKey = summaries.ToDictionary(s => (s.MessageType, s.TargetId));
         var list = new List<ConversationItem>();
@@ -1088,6 +1164,7 @@ public partial class MainViewModel : ViewModelBase
                 conv.SortTime = ParseTimestamp(s.Timestamp);
                 conv.Time = FormatTime(s.Timestamp);
             }
+            conv.UnreadCount = unreadCounts.TryGetValue((f.UserId, 0), out var fu) ? fu : 0;
             ResolveUserAvatar(f.UserId, b => conv.AvatarBitmap = b);
             list.Add(conv);
         }
@@ -1111,6 +1188,7 @@ public partial class MainViewModel : ViewModelBase
                 conv.SortTime = ParseTimestamp(s.Timestamp);
                 conv.Time = FormatTime(s.Timestamp);
             }
+            conv.UnreadCount = unreadCounts.TryGetValue((g.GroupId, 1), out var gu) ? gu : 0;
             ResolveGroupAvatar(g.GroupId, b => conv.AvatarBitmap = b);
             list.Add(conv);
         }
@@ -1332,6 +1410,13 @@ public partial class MainViewModel : ViewModelBase
         };
 
         _accountManager.OnGroupsChanged += accountId =>
+        {
+            if (CurrentAccount?.Uin == accountId)
+                ScheduleDataRefresh();
+            return Task.CompletedTask;
+        };
+
+        _accountManager.OnHistoryCaughtUp += accountId =>
         {
             if (CurrentAccount?.Uin == accountId)
                 ScheduleDataRefresh();
