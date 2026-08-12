@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Threading.Tasks;
@@ -126,15 +127,12 @@ public partial class MessageItem : ObservableObject
     /// <summary>消息里的图片（可能多张），URL 解析完成后更新 Bitmap</summary>
     public ObservableCollection<MessageImage> Images { get; } = new();
 
-    private bool _hasImages;
-    public bool HasImages => _hasImages;
+    public void AddImage(MessageImage img) => Images.Add(img);
 
-    public void AddImage(MessageImage img)
-    {
-        Images.Add(img);
-        _hasImages = true;
-        OnPropertyChanged(nameof(HasImages));
-    }
+    /// <summary>有序渲染块（文本/图片按消息段原始顺序），气泡按此渲染支持真图文混排</summary>
+    public List<MessageDisplayBlock> RenderBlocks { get; } = new();
+
+    public bool HasRenderBlocks => RenderBlocks.Count > 0;
 
     public bool IsSystem => Kind == MessageKind.System;
     public bool IsOther => !IsMine && !IsSystem;
@@ -144,9 +142,6 @@ public partial class MessageItem : ObservableObject
     public bool CanPoke => IsOther || IsGroup;
     public bool IsNotSystem => !IsSystem;
     public bool HasReply => !string.IsNullOrWhiteSpace(ReplyText);
-    public bool IsImage => Kind == MessageKind.Image;
-    public bool IsFile => Kind == MessageKind.File;
-    public bool IsTextLike => Kind is MessageKind.Text or MessageKind.At or MessageKind.Reply;
     public bool ShowName => ShowSenderName;
     public HorizontalAlignment BubbleAlignment => IsMine ? HorizontalAlignment.Right : HorizontalAlignment.Left;
 }

@@ -593,11 +593,7 @@ public partial class MainViewModel : ViewModelBase
         }
 
         // 只有发送成功才乐观上屏（NapCat 回声会带真实 message_id，走 IsSentBySelf 去重）
-        var imagePaths = segments
-            .Where(s => s.Type == MessageSegmentType.Image && s.ImageFile is not null)
-            .Select(s => s.ImageFile!)
-            .ToList();
-        var item = BuildOptimisticItem(conv, segments, imagePaths.Count > 0 ? imagePaths : null, true);
+        var item = BuildOptimisticItem(conv, segments, true);
         if (SelectedReply is not null)
         {
             item.ReplyToMessageId = SelectedReply.MessageId;
@@ -926,8 +922,8 @@ public partial class MainViewModel : ViewModelBase
         return false;
     }
 
-    /// <summary>构建乐观上屏消息项；segments 决定显示文本/类型，imagePaths 非空时逐张附加图片</summary>
-    private MessageItem BuildOptimisticItem(ConversationItem conv, List<MessageSegment> segments, List<string>? imagePaths, bool sent)
+    /// <summary>构建乐观上屏消息项；segments 决定显示文本/类型/图片顺序</summary>
+    private MessageItem BuildOptimisticItem(ConversationItem conv, List<MessageSegment> segments, bool sent)
     {
         var (kind, reply, fileName, _, _, displayText, _) =
             BuildSegments(segments, "", false, TryGetMemberNameMap(conv));
@@ -946,16 +942,7 @@ public partial class MainViewModel : ViewModelBase
             IsGroup = conv.IsGroup,
             StatusText = sent ? "✓✓" : "✓"
         };
-
-        if (imagePaths is not null)
-        {
-            foreach (var p in imagePaths)
-            {
-                var img = new MessageImage(p, null, _imageCache);
-                item.AddImage(img);
-                _ = img.ResolveAsync();
-            }
-        }
+        AttachRenderBlocks(item, BuildRenderBlocks(segments, TryGetMemberNameMap(conv)));
         return item;
     }
 
@@ -1745,7 +1732,7 @@ public partial class MainViewModel : ViewModelBase
             ImageCaption = imageCaption,
             StatusText = isMine ? "✓✓" : ""
         };
-        AttachImages(item, images);
+        AttachRenderBlocks(item, BuildRenderBlocks(m.Segments, atNameMap));
         if (!string.IsNullOrEmpty(m.SenderId))
             ResolveUserAvatar(m.SenderId, b => item.AvatarBitmap = b);
         return item;
@@ -1796,21 +1783,28 @@ public partial class MainViewModel : ViewModelBase
             ImageCaption = imageCaption,
             StatusText = isMine ? "✓✓" : ""
         };
-        AttachImages(item, images);
+        AttachRenderBlocks(item, BuildRenderBlocks(segments, atNameMap));
         if (!string.IsNullOrEmpty(e.SenderId))
             ResolveUserAvatar(e.SenderId, b => item.AvatarBitmap = b);
         return item;
     }
 
-    /// <summary>把图片源（URL/本地路径/base64）附加到消息项并异步解析</summary>
-    private void AttachImages(MessageItem item, List<string> sources)
+    /// <summary>把渲染块挂到消息项：图片块加入 Images（GIF/查看器用）并异步解析缩略图</summary>
+    private void AttachRenderBlocks(MessageItem item, List<MessageDisplayBlock> blocks)
     {
-        foreach (var src in sources)
+        foreach (var block in blocks)
         {
-            var img = new MessageImage(src, null, _imageCache);
-            item.AddImage(img);
-            _ = img.ResolveAsync();
+            item.RenderBlocks.Add(block);
+            if (block.Image is { } img)
+            {
+                item.AddImage(img);
+                _ = img.ResolveAsync();
+            }
         }
+
+        // 无任何段的消息（Text 回落为 fallbackContent）：兜底一个文本块，避免气泡空白
+        if (item.RenderBlocks.Count == 0 && !string.IsNullOrEmpty(item.Text))
+            item.RenderBlocks.Add(MessageDisplayBlock.CreateText(item.Text));
     }
 
     // ---- 头像 ----
@@ -1989,6 +1983,71 @@ public partial class MainViewModel : ViewModelBase
         => string.IsNullOrEmpty(localId)
             ? null
             : Messages.FirstOrDefault(m => m.Id == localId);
+
+    /// <summary>
+    /// 按消息段原始顺序生成有序渲染块：文本段合并为文本块、图片段为图片块，
+    /// 使「文字-图片-文字」混排消息能按原顺序显示。Reply 段不产生块（引用条单独渲染）。
+    /// </summary>
+    private List<MessageDisplayBlock> BuildRenderBlocks(
+        List<MessageSegment> segments, IReadOnlyDictionary<string, string>? atNameMap)
+    {
+        var blocks = new List<MessageDisplayBlock>();
+        var text = new StringBuilder();
+
+        void Flush()
+        {
+            if (text.Length > 0)
+            {
+                blocks.Add(MessageDisplayBlock.CreateText(text.ToString().TrimEnd()));
+                text.Clear();
+            }
+        }
+
+        foreach (var seg in segments)
+        {
+            switch (seg.Type)
+            {
+                case MessageSegmentType.Text:
+                    text.Append(seg.Text);
+                    break;
+                case MessageSegmentType.At:
+                    if (seg.AtUserId == "all")
+                        text.Append("@全体");
+                    else if (atNameMap is not null && seg.AtUserId is not null && atNameMap.TryGetValue(seg.AtUserId, out var atName))
+                        text.Append("@" + atName);
+                    else
+                        text.Append("@" + seg.AtUserId);
+                    break;
+                case MessageSegmentType.Image:
+                    Flush();
+                    var src = seg.ImageUrl ?? seg.ImageFile;
+                    if (!string.IsNullOrEmpty(src))
+                        blocks.Add(MessageDisplayBlock.CreateImage(new MessageImage(src, null, _imageCache)));
+                    break;
+                case MessageSegmentType.File:
+                    text.Append($"[文件] {seg.FileName ?? ""}");
+                    break;
+                case MessageSegmentType.Record:
+                    text.Append("[语音]");
+                    break;
+                case MessageSegmentType.Video:
+                    text.Append("[视频]");
+                    break;
+                case MessageSegmentType.Face:
+                    text.Append("[表情]");
+                    break;
+                case MessageSegmentType.Reply:
+                    // 引用条单独显示，不产生渲染块
+                    break;
+                default:
+                    text.Append(seg.GetSearchableText());
+                    break;
+            }
+        }
+
+        Flush();
+        return blocks;
+    }
 
     private static (MessageKind Kind, string? Reply, string? FileName, string? FileSize, string? ImageCaption, string Text, List<string> Images)
         BuildSegments(List<MessageSegment> segments, string fallbackContent, bool isSystem,

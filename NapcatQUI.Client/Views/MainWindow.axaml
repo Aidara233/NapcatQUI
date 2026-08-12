@@ -280,46 +280,45 @@
                                                                    TextTrimming="CharacterEllipsis" MaxWidth="340" />
                                                     </StackPanel>
                                                 </Border>
-                                                <StackPanel IsVisible="{Binding IsFile}"
-                                                            Orientation="Horizontal" Spacing="8">
-                                                    <TextBlock Text="📄" FontSize="20" />
-                                                    <TextBlock Text="{Binding FileName}" FontSize="13"
-                                                               FontWeight="500" VerticalAlignment="Center" />
-                                                </StackPanel>
-                                                <!-- 图片：URL 解析后显示本体，加载中/失败各有占位 -->
-                                                <ItemsControl ItemsSource="{Binding Images}"
-                                                              IsVisible="{Binding HasImages}">
+                                                <!-- 有序渲染块：文本/图片按消息段原始顺序，支持真图文混排 -->
+                                                <ItemsControl ItemsSource="{Binding RenderBlocks}"
+                                                              IsVisible="{Binding HasRenderBlocks}">
                                                     <ItemsControl.ItemTemplate>
-                                                        <DataTemplate x:DataType="models:MessageImage">
-                                                            <Grid Width="260" Height="180" Margin="0,2"
-                                                                  ClipToBounds="True"
-                                                                  PointerPressed="OnImageCellPointerPressed">
-                                                                <Border Background="#00000010" CornerRadius="6" />
-                                                                <Image Source="{Binding Bitmap}" Stretch="Uniform" />
-                                                                <StackPanel IsVisible="{Binding Loading}"
-                                                                            VerticalAlignment="Center"
-                                                                            HorizontalAlignment="Center" Spacing="6">
-                                                                    <ProgressBar IsIndeterminate="True" Width="120"
-                                                                                 Height="4" />
-                                                                    <TextBlock Text="加载图片…" FontSize="11"
-                                                                               Foreground="{DynamicResource TextTertiaryBrush}"
-                                                                               HorizontalAlignment="Center" />
-                                                                </StackPanel>
-                                                                <StackPanel IsVisible="{Binding Failed}"
-                                                                            VerticalAlignment="Center"
-                                                                            HorizontalAlignment="Center" Spacing="4">
-                                                                    <TextBlock Text="🖼" FontSize="24"
-                                                                               HorizontalAlignment="Center" />
-                                                                    <TextBlock Text="图片加载失败" FontSize="11"
-                                                                               Foreground="{DynamicResource TextTertiaryBrush}" />
-                                                                </StackPanel>
+                                                        <DataTemplate x:DataType="models:MessageDisplayBlock">
+                                                            <Grid>
+                                                                <!-- 文本块 -->
+                                                                <TextBlock Text="{Binding Text}" FontSize="14"
+                                                                           TextWrapping="Wrap" Margin="0,1"
+                                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                           IsVisible="{Binding IsText}" />
+                                                                <!-- 图片块：URL 解析后显示本体，加载中/失败各有占位 -->
+                                                                <Grid Width="260" Height="180" Margin="0,2"
+                                                                      ClipToBounds="True" IsVisible="{Binding IsImage}"
+                                                                      PointerPressed="OnImageCellPointerPressed">
+                                                                    <Border Background="#00000010" CornerRadius="6" />
+                                                                    <Image Source="{Binding Image.Bitmap}" Stretch="Uniform" />
+                                                                    <StackPanel IsVisible="{Binding Image.Loading}"
+                                                                                VerticalAlignment="Center"
+                                                                                HorizontalAlignment="Center" Spacing="6">
+                                                                        <ProgressBar IsIndeterminate="True" Width="120"
+                                                                                     Height="4" />
+                                                                        <TextBlock Text="加载图片…" FontSize="11"
+                                                                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                                   HorizontalAlignment="Center" />
+                                                                    </StackPanel>
+                                                                    <StackPanel IsVisible="{Binding Image.Failed}"
+                                                                                VerticalAlignment="Center"
+                                                                                HorizontalAlignment="Center" Spacing="4">
+                                                                        <TextBlock Text="🖼" FontSize="24"
+                                                                                   HorizontalAlignment="Center" />
+                                                                        <TextBlock Text="图片加载失败" FontSize="11"
+                                                                                   Foreground="{DynamicResource TextTertiaryBrush}" />
+                                                                    </StackPanel>
+                                                                </Grid>
                                                             </Grid>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
-                                                <TextBlock Text="{Binding Text}" FontSize="14" TextWrapping="Wrap"
-                                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                                           IsVisible="{Binding IsTextLike}" />
                                                 <TextBlock Text="{Binding StatusText}" FontSize="11"
                                                            Foreground="{DynamicResource TextTertiaryBrush}"
                                                            HorizontalAlignment="Right" IsVisible="{Binding IsMine}" />

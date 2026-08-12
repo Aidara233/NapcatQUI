@@ -184,12 +184,21 @@ public partial class MainWindow : Window
     private void OnImageCellPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (e.ClickCount < 2) return;
-        if (sender is not Control cell || cell.DataContext is not MessageImage clicked) return;
-        if (clicked.Bitmap is null || clicked.LocalPath is null) return;
+        if (sender is not Control cell) return;
 
-        // 收集同一消息里已加载完成的图片，按消息内顺序打开
+        // 图片现在渲染在 RenderBlocks 的块模板里，DataContext 是 MessageDisplayBlock（取它的 Image）
+        MessageImage? clicked = cell.DataContext switch
+        {
+            MessageImage img => img,
+            MessageDisplayBlock block => block.Image,
+            _ => null
+        };
+        if (clicked is null || clicked.Bitmap is null || clicked.LocalPath is null) return;
+
+        // 收集同一消息里已加载完成的图片，按消息内顺序打开。
+        // 向上找到 DataContext 是 MessageItem 的 ItemsControl（消息列表）。
         var paths = new List<string>();
-        if (cell.FindAncestorOfType<ItemsControl>()?.DataContext is MessageItem msgItem)
+        if (cell.FindAncestorOfType<ItemsControl>(true, c => c.DataContext is MessageItem)?.DataContext is MessageItem msgItem)
         {
             foreach (var img in msgItem.Images)
                 if (img.LocalPath is not null)
