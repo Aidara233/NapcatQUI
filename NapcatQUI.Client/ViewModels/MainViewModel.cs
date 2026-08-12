@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -107,6 +108,14 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<ContactItem> Contacts { get; } = new();
     public ObservableCollection<ConversationItem> Groups { get; } = new();
     public ObservableCollection<GroupMemberItem> GroupMembers { get; } = new();
+
+    /// <summary>待发送图片（选图/粘贴先入队，点发送时与文字合并为一条消息，支持图文混排）</summary>
+    public ObservableCollection<MessageImage> PendingImages { get; } = new();
+
+    public bool HasPendingImages => PendingImages.Count > 0;
+
+    /// <summary>待发图片上限：base64 内嵌膨胀约 33%，超大会导致报文过大或上传失败</summary>
+    private const long MaxPendingImageBytes = 15L * 1024 * 1024;
 
     // ---- 可观察属性 ----
 
@@ -261,6 +270,7 @@ public partial class MainViewModel : ViewModelBase
         IsAtPickerOpen = false;
         SelectedReply = null;
         SelectedAtMembers.Clear();
+        ClearPendingImages();
         CurrentPage = "chat";
         _ = LoadConversationMessagesAsync(value);
         _ = MarkConversationReadAsync(value);
@@ -512,7 +522,7 @@ public partial class MainViewModel : ViewModelBase
         var conv = SelectedConversation;
         if (conv is null) return;
         var text = ComposerText.Trim();
-        if (text.Length == 0 && SelectedAtMembers.Count == 0) return; // 纯引用不能发空消息
+        if (text.Length == 0 && SelectedAtMembers.Count == 0 && PendingImages.Count == 0) return;
 
         var segments = new List<MessageSegment>();
         if (SelectedReply is not null && !string.IsNullOrEmpty(SelectedReply.MessageId))
@@ -521,11 +531,26 @@ public partial class MainViewModel : ViewModelBase
             segments.Add(MessageSegment.CreateAt(at.UserId));
         if (text.Length > 0)
             segments.Add(MessageSegment.CreateText(text));
+        foreach (var img in PendingImages)
+        {
+            var src = img.LocalPath ?? img.Source;
+            if (!string.IsNullOrEmpty(src))
+                segments.Add(MessageSegment.CreateImage(src));
+        }
 
         var sent = await SendSegmentsAsync(conv, segments);
+        if (!sent)
+        {
+            // 失败不乐观上屏：保留文字/图片/回复/@，便于重试，不污染会话
+            StatusMessage = "发送失败，请检查网络后重试";
+            return;
+        }
 
-        // 乐观上屏（NapCat 回声会带真实 message_id，走 IsSentBySelf 去重）
-        var item = BuildOptimisticItem(conv, segments, null, sent);
+        // 只有发送成功才乐观上屏（NapCat 回声会带真实 message_id，走 IsSentBySelf 去重）
+        var imagePaths = PendingImages.Count > 0
+            ? PendingImages.Select(i => i.LocalPath ?? i.Source).Where(p => !string.IsNullOrEmpty(p)).ToList()
+            : null;
+        var item = BuildOptimisticItem(conv, segments, imagePaths, true);
         if (SelectedReply is not null)
         {
             item.ReplyToMessageId = SelectedReply.MessageId;
@@ -538,11 +563,12 @@ public partial class MainViewModel : ViewModelBase
         ComposerText = string.Empty;
         SelectedReply = null;
         SelectedAtMembers.Clear();
+        ClearPendingImages();
     }
 
     private bool CanSendMessage() =>
         SelectedConversation is not null &&
-        (!string.IsNullOrWhiteSpace(ComposerText) || SelectedAtMembers.Count > 0);
+        (!string.IsNullOrWhiteSpace(ComposerText) || SelectedAtMembers.Count > 0 || PendingImages.Count > 0);
 
     // ---- 引用 / @ / 戳一戳 ----
 
@@ -631,7 +657,7 @@ public partial class MainViewModel : ViewModelBase
         StatusMessage = ok ? $"戳了 {item.SenderName} 一下" : "戳一戳发送失败";
     }
 
-    /// <summary>选择本地图片发送（支持多选）</summary>
+    /// <summary>选择本地图片加入待发队列（点发送时与文字合并为一条消息，支持多图）</summary>
     [RelayCommand]
     private async Task SendImages()
     {
@@ -653,43 +679,88 @@ public partial class MainViewModel : ViewModelBase
         });
         if (files.Count == 0) return;
 
-        var paths = new List<string>();
+        var added = 0;
         foreach (var f in files)
         {
             var p = f.TryGetLocalPath();
-            if (!string.IsNullOrEmpty(p)) paths.Add(p);
+            if (string.IsNullOrEmpty(p)) continue;
+            if (AddPendingImage(p)) added++;
         }
-        if (paths.Count == 0) return;
 
-        var segments = paths.Select(MessageSegment.CreateImage).ToList();
-        var sent = await SendSegmentsAsync(conv, segments);
-        var item = BuildOptimisticItem(conv, segments, paths, sent);
-        AppendToConversation(item, conv);
+        StatusMessage = added > 0
+            ? $"已添加 {added} 张图片，点发送直接发图，输入文字可图文混排"
+            : "所选图片无法添加（超过 15MB 或文件不可读）";
     }
 
-    /// <summary>粘贴图片发送（MainWindow 捕获 Ctrl+V 剪贴板图片后调用，bitmap 已编码为 PNG 落盘）</summary>
-    public async Task SendClipboardImageAsync(Bitmap bitmap)
+    /// <summary>把本地图片加入待发条；超限/无效返回 false</summary>
+    private bool AddPendingImage(string path)
     {
-        var conv = SelectedConversation;
-        if (conv is null || _imageCache is null || bitmap is null) return;
-
-        string path;
         try
         {
-            path = _imageCache.CreatePasteImagePath();
+            var info = new FileInfo(path);
+            if (!info.Exists) return false;
+            if (info.Length > MaxPendingImageBytes)
+            {
+                StatusMessage = "图片超过 15MB，无法发送";
+                return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        var img = new MessageImage(path, null, _imageCache);
+        PendingImages.Add(img);
+        OnPropertyChanged(nameof(HasPendingImages));
+        // 只有图没文字时也能发：刷新发送按钮可用状态（CanSendMessage 依赖 PendingImages.Count）
+        SendMessageCommand.NotifyCanExecuteChanged();
+        _ = img.ResolveAsync();
+        return true;
+    }
+
+    /// <summary>从待发条移除一张图片</summary>
+    [RelayCommand]
+    private void RemovePendingImage(MessageImage? img)
+    {
+        if (img is null) return;
+        img.DisposeGif();
+        PendingImages.Remove(img);
+        OnPropertyChanged(nameof(HasPendingImages));
+        SendMessageCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>清空待发条（发送成功 / 切会话 / 清空数据时）</summary>
+    private void ClearPendingImages()
+    {
+        if (PendingImages.Count == 0) return;
+        foreach (var img in PendingImages) img.DisposeGif();
+        PendingImages.Clear();
+        OnPropertyChanged(nameof(HasPendingImages));
+        SendMessageCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>粘贴图片入队（MainWindow 捕获 Ctrl+V 剪贴板图片后调用，bitmap 已编码为 PNG 落盘）</summary>
+    public Task SendClipboardImageAsync(Bitmap bitmap)
+    {
+        if (SelectedConversation is null || _imageCache is null || bitmap is null)
+            return Task.CompletedTask;
+
+        try
+        {
+            var path = _imageCache.CreatePasteImagePath();
             bitmap.Save(path, PngBitmapEncoderOptions.Default); // 输出 PNG
+            if (AddPendingImage(path))
+                StatusMessage = "已添加图片，点发送直接发图，输入文字可图文混排";
+            else
+                StatusMessage = "粘贴图片失败";
         }
         catch (Exception ex)
         {
             Program.WriteCrashLog("SendClipboardImageAsync", ex);
             StatusMessage = "粘贴图片失败";
-            return;
         }
-
-        var segments = new List<MessageSegment> { MessageSegment.CreateImage(path) };
-        var sent = await SendSegmentsAsync(conv, segments);
-        var item = BuildOptimisticItem(conv, segments, new List<string> { path }, sent);
-        AppendToConversation(item, conv);
+        return Task.CompletedTask;
     }
 
     /// <summary>发送消息段到指定会话，返回是否成功（失败时置 StatusMessage）</summary>
@@ -818,6 +889,7 @@ public partial class MainViewModel : ViewModelBase
         CurrentAccount = account;
         SelectedConversation = null;
         DisposeGifs(_messageCache.Values.SelectMany(v => v)); // 账号切换，释放旧账号 GIF
+        ClearPendingImages();
         Messages.Clear();
         IsAccountSwitcherOpen = false;
         IsGroupDetailsOpen = false;
@@ -1089,6 +1161,7 @@ public partial class MainViewModel : ViewModelBase
         Groups.Clear();
         GroupMembers.Clear();
         Messages.Clear();
+        ClearPendingImages();
         SelectedConversation = null;
         OnPropertyChanged(nameof(HasConversations));
         OnPropertyChanged(nameof(ShowSearchEmptyState));

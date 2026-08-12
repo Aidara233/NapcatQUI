@@ -362,7 +362,7 @@
                 <Border Grid.Row="2" Padding="12,8" Background="{DynamicResource BgSurfaceBrush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
                         IsVisible="{Binding HasSelectedConversation}">
-                    <Grid RowDefinitions="Auto,Auto,Auto,Auto">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto">
                         <!-- 引用回复条 -->
                         <Border Grid.Row="0" Margin="0,0,0,6" Padding="8,6" Background="#00000012"
                                 CornerRadius="6" IsVisible="{Binding HasReplyTarget}">
@@ -408,12 +408,39 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <TextBox x:Name="Composer" Grid.Row="2" Text="{Binding ComposerText, Mode=TwoWay}"
+                        <!-- 待发送图片条（选图/粘贴先入队，点发送时与文字合并） -->
+                        <ItemsControl Grid.Row="2" ItemsSource="{Binding PendingImages}"
+                                      IsVisible="{Binding HasPendingImages}" Margin="0,0,0,6">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:MessageImage">
+                                    <Border Margin="0,0,6,0" Padding="4" Background="#00000012" CornerRadius="6" ClipToBounds="True">
+                                        <Grid>
+                                            <Image Source="{Binding Bitmap}" Width="72" Height="72"
+                                                   Stretch="UniformToFill" />
+                                            <Border HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                    Background="#CC000000" CornerRadius="8" Padding="2" Margin="2">
+                                                <Button Content="✕" Width="16" Height="16" Padding="0" FontSize="9"
+                                                        Background="Transparent" Foreground="White"
+                                                        Command="{Binding $parent[ItemsControl].DataContext.RemovePendingImageCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBox x:Name="Composer" Grid.Row="3" Text="{Binding ComposerText, Mode=TwoWay}"
                                  PlaceholderText="输入消息，回车发送（Shift+Enter 换行）"
                                  AcceptsReturn="True" MinHeight="60" MaxHeight="160"
                                  TextWrapping="Wrap" FontSize="14"
                                  Background="{DynamicResource BgSurfaceBrush}" />
-                        <DockPanel Grid.Row="3" Margin="0,6,0,0">
+                        <DockPanel Grid.Row="4" Margin="0,6,0,0">
                             <Button DockPanel.Dock="Right" Content="发送 ⬆"
                                     Command="{Binding SendMessageCommand}"
                                     Background="{DynamicResource AccentBrush}" Foreground="White"
