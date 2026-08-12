@@ -434,10 +434,11 @@ public class AccountSession : IAsyncDisposable
     /// 单页历史：message_seq="0" 取最新一批，否则以该短 message_id 为起点往回翻。
     /// 返回按时间从旧到新。历史是按会话拉的，接收者已知，这里强制 TargetId=targetId ——
     /// 这是自发私聊消息能落对会话的关键（NapCat 事件里没有接收者，只能靠历史补偿定位）。
+    /// 返回 null 表示连接不可用或接口报错（可重试）；空列表表示确实没有更早消息（终态）。
     /// </summary>
-    private async Task<List<Message>> FetchHistoryPageAsync(string targetId, MessageType type, string messageSeq, int count)
+    private async Task<List<Message>?> FetchHistoryPageAsync(string targetId, MessageType type, string messageSeq, int count)
     {
-        if (_connection == null) return new();
+        if (_connection == null) return null;
         var action = type == MessageType.Group ? "get_group_msg_history" : "get_friend_msg_history";
         var key = type == MessageType.Group ? "group_id" : "user_id";
 
@@ -478,42 +479,64 @@ public class AccountSession : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to fetch history page for {TargetId} seq={Seq}", targetId, messageSeq);
-            return new();
+            return null;
         }
     }
 
+    /// <summary>拉页带重试：瞬时错误（null）最多重试 3 次，仍失败才返回 null 让调用方收尾。</summary>
+    private async Task<List<Message>?> FetchHistoryPageWithRetryAsync(
+        string targetId, MessageType type, string messageSeq, int count, CancellationToken ct = default)
+    {
+        const int attempts = 3;
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var page = await FetchHistoryPageAsync(targetId, type, messageSeq, count);
+            if (page is not null) return page;
+            if (attempt + 1 < attempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * (attempt + 1)), ct);
+        }
+        return null;
+    }
+
     /// <summary>
-    /// 启动/重连补偿：从最新一批往回翻，逐批入库，直到某页全部已知（追上本地）或达到条数上限。
-    /// 返回本次真正新增（未读增量）的条数。单页 20（QQNT 原生上限，count 设大不可靠）。
+    /// 启动/重连补偿：从最新一批往回翻，逐批入库，直到达到预算或翻到历史起点。
+    /// 单页 20（QQNT 原生上限，count 设大不可靠）。
+    ///
+    /// 特意不把「某页全是已入库消息」当作停批条件：上一轮追赶若在中间被瞬时错误中断，
+    /// 会留下中间空洞；靠「已入库就不拉」会让洞被永久跳过。无条件把预算内的窗口全部从
+    /// 远端过一遍（INSERT OR IGNORE 天然去重）才能兜住。代价是每连接多拉几页，由
+    /// maxMessages 封顶，下轮连接仍会重跑全窗口。
     /// </summary>
     public async Task<int> CatchUpHistoryAsync(string targetId, MessageType type, int maxMessages = 100, CancellationToken ct = default)
     {
         const int pageSize = 20;
         var maxPages = Math.Max(1, maxMessages / pageSize);
         var inserted = 0;
+        var fetched = 0;
         string? seq = null;
 
         for (var page = 0; page < maxPages; page++)
         {
             ct.ThrowIfCancellationRequested();
-            var pageMsgs = await FetchHistoryPageAsync(targetId, type, seq ?? "0", pageSize);
-            if (pageMsgs.Count == 0) break; // 没有更早的了
-
-            var pageInserted = 0;
-            foreach (var msg in pageMsgs)
+            var pageMsgs = await FetchHistoryPageWithRetryAsync(targetId, type, seq ?? "0", pageSize, ct);
+            if (pageMsgs is null)
             {
-                if (await SaveMessageAsync(msg))
-                    pageInserted++;
+                // 重试耗尽：本轮没追完，但下轮连接会重跑全窗口，不会留死洞
+                _logger.LogWarning("History catch-up for {TargetId} aborted: page fetch failed after retries", targetId);
+                break;
             }
-            inserted += pageInserted;
+            fetched += pageMsgs.Count;
+            if (pageMsgs.Count == 0) break;          // 确实没有更早的了
 
-            // 本页一条都没新增 → 已追上本地已有；不满整页 → 到历史起点
-            if (pageInserted == 0 || pageMsgs.Count < pageSize) break;
-            if (inserted >= maxMessages) break;
+            foreach (var msg in pageMsgs)
+                if (await SaveMessageAsync(msg)) inserted++;
 
-            // 下一批以本页最老一条为起点往回翻（reverse_order=true）
-            seq = pageMsgs[0].MessageId;
-            if (string.IsNullOrEmpty(seq)) break; // 起点消息无 id，无法继续翻页
+            if (pageMsgs.Count < pageSize) break;    // 不满整页 → 到历史起点
+            if (fetched >= maxMessages) break;       // 达到预算
+
+            seq = pageMsgs[0].MessageId;             // 以最老一条为起点继续往回翻
+            if (string.IsNullOrEmpty(seq)) break;
         }
 
         return inserted;
@@ -529,8 +552,8 @@ public class AccountSession : IAsyncDisposable
 
         for (var page = 0; page < maxPages; page++)
         {
-            var pageMsgs = await FetchHistoryPageAsync(targetId, type, seq ?? "0", 20);
-            if (pageMsgs.Count == 0) break;
+            var pageMsgs = await FetchHistoryPageWithRetryAsync(targetId, type, seq ?? "0", 20);
+            if (pageMsgs is null || pageMsgs.Count == 0) break;
             collected.AddRange(pageMsgs);
             if (pageMsgs.Count < 20 || collected.Count >= maxMessages) break;
             seq = pageMsgs[0].MessageId;
@@ -551,7 +574,8 @@ public class AccountSession : IAsyncDisposable
     /// </summary>
     public async Task<List<Message>> FetchOlderMessagesAsync(string targetId, MessageType type, string beforeMessageId, int count = 20)
     {
-        var msgs = await FetchHistoryPageAsync(targetId, type, beforeMessageId, count);
+        var msgs = await FetchHistoryPageWithRetryAsync(targetId, type, beforeMessageId, count);
+        if (msgs is null) return new();
         foreach (var msg in msgs)
             await SaveMessageAsync(msg);
         return msgs;
