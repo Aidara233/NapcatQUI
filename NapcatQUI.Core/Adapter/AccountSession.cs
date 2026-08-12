@@ -84,7 +84,7 @@ public class AccountSession : IAsyncDisposable
         var result = await _connection.SendApiRequestAsync("send_private_msg", new()
         {
             ["user_id"] = userId,
-            ["message"] = SerializeSegments(segments)
+            ["message"] = SerializeSegmentsForSend(segments)
         });
         var messageId = ExtractMessageId(result);
         if (messageId != null)
@@ -98,7 +98,7 @@ public class AccountSession : IAsyncDisposable
         var result = await _connection.SendApiRequestAsync("send_group_msg", new()
         {
             ["group_id"] = groupId,
-            ["message"] = SerializeSegments(segments)
+            ["message"] = SerializeSegmentsForSend(segments)
         });
         var messageId = ExtractMessageId(result);
         if (messageId != null)
@@ -675,6 +675,39 @@ public class AccountSession : IAsyncDisposable
             ["type"] = s.Type.ToString().ToLowerInvariant(),
             ["data"] = s.Data
         }).ToList();
+    }
+
+    /// <summary>
+    /// 发送前序列化：把本地图片文件转成 base64:// 内嵌。
+    /// NapCat 可能不在本机（远程服务器/Docker），裸本地路径 existsSync 命中不了必然失败；
+    /// base64:// 由 NapCat 解码落盘再上传，不依赖双方共享文件系统。
+    /// </summary>
+    private static List<Dictionary<string, object?>> SerializeSegmentsForSend(List<MessageSegment> segments)
+    {
+        var result = new List<Dictionary<string, object?>>(segments.Count);
+        foreach (var s in segments)
+        {
+            var data = s.Data;
+            if (s.Type == MessageSegmentType.Image && data.TryGetValue("file", out var f) &&
+                f is string file && file.Length > 0 && !file.Contains("://") && File.Exists(file))
+            {
+                try
+                {
+                    var bytes = File.ReadAllBytes(file);
+                    data = new Dictionary<string, object?>(data) { ["file"] = "base64://" + Convert.ToBase64String(bytes) };
+                }
+                catch (Exception)
+                {
+                    // 读不到就原样交给 NapCat，由它报具体错误
+                }
+            }
+            result.Add(new Dictionary<string, object?>
+            {
+                ["type"] = s.Type.ToString().ToLowerInvariant(),
+                ["data"] = data
+            });
+        }
+        return result;
     }
 
     private static string? GetJsonString(System.Text.Json.JsonElement el, string prop)

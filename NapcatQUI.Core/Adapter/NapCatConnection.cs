@@ -257,6 +257,13 @@ public class NapCatConnection : IAsyncDisposable
                 var echo = echoEl.GetString();
                 if (echo != null && _echoDict.TryGetValue(echo, out var tcs))
                 {
+                    // 记录失败响应，便于诊断发送问题（调用方靠 data.message_id 判成功，此处不影响）
+                    if (root.TryGetProperty("status", out var st) && st.GetString() == "failed")
+                    {
+                        var wording = root.TryGetProperty("wording", out var w) && w.ValueKind == JsonValueKind.String
+                            ? w.GetString() : root.TryGetProperty("message", out var m) ? m.GetString() : "";
+                        _logger.LogWarning("API request failed: action echo={Echo}, reason={Reason}", echo, wording);
+                    }
                     // 必须给等待方一份独立的 JsonDocument：doc 是 using 声明的，
                     // 方法退出即释放，直接传原 doc 会在读取时抛 ObjectDisposedException
                     tcs.TrySetResult(JsonDocument.Parse(json));
