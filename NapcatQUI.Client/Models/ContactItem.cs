@@ -45,19 +45,3 @@ public partial class GroupMemberItem : ObservableObject
 
     public bool HasSpecialTitle => !string.IsNullOrWhiteSpace(SpecialTitle);
 }
-
-/// <summary>输入区已选中的 @ 成员（chip）</summary>
-public partial class AtMemberChip : ObservableObject
-{
-    public AtMemberChip(string userId, string name)
-    {
-        UserId = userId;
-        Name = name;
-    }
-
-    public string UserId { get; }
-    public string Name { get; }
-
-    /// <summary>chips 里显示 "@名字"</summary>
-    public string DisplayName => "@" + Name;
-}

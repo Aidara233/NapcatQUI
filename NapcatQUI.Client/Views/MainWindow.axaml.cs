@@ -26,29 +26,37 @@ public partial class MainWindow : Window
         _messageScroll = this.FindControl<ScrollViewer>("MessageScroll");
         DataContextChanged += (_, _) => OnDataContextChanged();
 
-        var composer = this.FindControl<TextBox>("Composer");
-        if (composer is not null)
-        {
-            // 回车发送必须用 Tunnel 路由：在 TextBox 默认换行处理之前拦截。
-            // （中文输入法组词选字时的回车由输入法框架消费，不会走到这里）
-            composer.AddHandler(InputElement.KeyDownEvent, OnComposerKeyDown, RoutingStrategies.Tunnel);
-        }
+        // 回车发送必须用 Tunnel 路由：在 TextBox 默认换行处理之前拦截。
+        // （AcceptsReturn=True 的 TextBox 会吞掉 Enter，bubble 收不到；中文输入法组词选字时回车由输入法框架消费）
+        var composerGrid = this.FindControl<Grid>("ComposerGrid");
+        if (composerGrid is not null)
+            composerGrid.AddHandler(InputElement.KeyDownEvent, OnComposeTextKeyDown, RoutingStrategies.Tunnel);
     }
 
     private void OnDataContextChanged()
     {
         if (_vm is not null)
+        {
             _vm.Messages.CollectionChanged -= OnMessagesChanged;
+            _vm.ComposerFocusRequested -= OnComposerFocusRequested;
+        }
 
         _vm = DataContext as MainViewModel;
 
         if (_vm is not null)
         {
             _vm.Messages.CollectionChanged += OnMessagesChanged;
+            _vm.ComposerFocusRequested += OnComposerFocusRequested;
             _messageScroll = this.FindControl<ScrollViewer>("MessageScroll");
             // 文件选择器由窗口注入（发送图片用）
             _vm.StorageProvider = this.StorageProvider;
         }
+    }
+
+    /// <summary>请求聚焦大文本框（发送成功/切会话后自动聚焦）</summary>
+    private void OnComposerFocusRequested()
+    {
+        Dispatcher.UIThread.Post(() => this.FindControl<TextBox>("Composer")?.Focus());
     }
 
     /// <summary>
@@ -172,13 +180,6 @@ public partial class MainWindow : Window
             _vm?.ToggleAtMemberCommand.Execute(member);
     }
 
-    /// <summary>@ 已选 chip：点 ✕ 移除</summary>
-    private void OnRemoveAtMemberClicked(object? sender, PointerPressedEventArgs e)
-    {
-        if ((sender as Border)?.Tag is AtMemberChip chip)
-            _vm?.RemoveAtMemberCommand.Execute(chip);
-    }
-
     /// <summary>双击聊天里的图片 → 打开独立查看器（同一消息多图可切换）</summary>
     private void OnImageCellPointerPressed(object? sender, PointerPressedEventArgs e)
     {
@@ -233,9 +234,12 @@ public partial class MainWindow : Window
         });
     }
 
-    private async void OnComposerKeyDown(object? sender, KeyEventArgs e)
+    private async void OnComposeTextKeyDown(object? sender, KeyEventArgs e)
     {
-        // Ctrl+V：剪贴板有图片时直接发送（QQ 截图粘贴），否则交回 TextBox 粘文本
+        // 隧道路由先于目标到达，只处理大文本框里的按键
+        if (e.Source is not TextBox) return;
+
+        // Ctrl+V：剪贴板有图片时直接入队，否则交回 TextBox 粘文本
         if (e.Key == Key.V && (e.KeyModifiers & KeyModifiers.Control) != 0 && !e.Handled)
         {
             var cb = this.Clipboard;
@@ -260,5 +264,59 @@ public partial class MainWindow : Window
 
         _vm?.SendMessageCommand.Execute(null);
         e.Handled = true;
+    }
+
+    /// <summary>双击块间/两端缝隙：在此处插入文本块。前缝 Tag=右侧块；尾缝 Tag=null</summary>
+    private void OnInsertionGapDoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (sender is not Border b || _vm is null) return;
+        if (b.Tag is ComposeSegment anchor)
+            _vm.InsertTextBeforeCommand.Execute(anchor);
+        else
+            _vm.InsertTextAfterCommand.Execute(null);
+    }
+
+    /// <summary>
+    /// 待发条块点击：
+    /// - 文本块：左键切为大文本框当前编辑，右键快速移除。
+    /// - @/图片块：左键/右键都弹操作菜单（上移/下移/移除）。
+    /// 菜单在代码里构建、用闭包捕获块。
+    /// </summary>
+    private void OnComposeBlockClicked(object? sender, PointerPressedEventArgs e)
+    {
+        var right = e.GetCurrentPoint(this).Properties.IsRightButtonPressed;
+        if (sender is not Control block || block.DataContext is not ComposeSegment seg || _vm is null) return;
+
+        if (seg.Kind == ComposeSegmentKind.Text)
+        {
+            if (right)
+                _vm.RemoveSegmentCommand.Execute(seg);
+            else
+                _vm.ActivateTextBlockCommand.Execute(seg);
+            return;
+        }
+
+        OpenBlockContextMenu(block, seg);
+    }
+
+    private void OpenBlockContextMenu(Control block, ComposeSegment seg)
+    {
+        var menu = new ContextMenu();
+
+        var up = new MenuItem { Header = "上移" };
+        up.Click += (_, _) => _vm!.MoveSegmentUpCommand.Execute(seg);
+        menu.Items.Add(up);
+
+        var down = new MenuItem { Header = "下移" };
+        down.Click += (_, _) => _vm!.MoveSegmentDownCommand.Execute(seg);
+        menu.Items.Add(down);
+
+        menu.Items.Add(new Separator());
+
+        var remove = new MenuItem { Header = "移除" };
+        remove.Click += (_, _) => _vm!.RemoveSegmentCommand.Execute(seg);
+        menu.Items.Add(remove);
+
+        menu.Open(block);
     }
 }

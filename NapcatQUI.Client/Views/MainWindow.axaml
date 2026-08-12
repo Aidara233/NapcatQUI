@@ -362,7 +362,7 @@
                 <Border Grid.Row="2" Padding="12,8" Background="{DynamicResource BgSurfaceBrush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
                         IsVisible="{Binding HasSelectedConversation}">
-                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                    <Grid x:Name="ComposerGrid" RowDefinitions="Auto,Auto,Auto,Auto">
                         <!-- 引用回复条 -->
                         <Border Grid.Row="0" Margin="0,0,0,6" Padding="8,6" Background="#00000012"
                                 CornerRadius="6" IsVisible="{Binding HasReplyTarget}">
@@ -382,65 +382,62 @@
                             </DockPanel>
                         </Border>
 
-                        <!-- @ 已选成员 chips -->
-                        <ItemsControl Grid.Row="1" ItemsSource="{Binding SelectedAtMembers}"
-                                      Margin="0,0,0,6" IsVisible="{Binding HasSelectedAtMembers}">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="models:AtMemberChip">
-                                    <Border Margin="0,0,6,4" Padding="8,3" Background="#00000012" CornerRadius="6">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <TextBlock Text="{Binding DisplayName}" FontSize="12"
-                                                       VerticalAlignment="Center"
-                                                       Foreground="{DynamicResource TextPrimaryBrush}" />
-                                            <Border Padding="4,1" CornerRadius="3" Background="#0A000000"
-                                                    Cursor="Hand" VerticalAlignment="Center"
-                                                    Tag="{Binding}" PointerPressed="OnRemoveAtMemberClicked"
-                                                    ToolTip.Tip="移除">
-                                                <TextBlock Text="✕" FontSize="10"
-                                                           Foreground="{DynamicResource TextSecondaryBrush}" />
-                                            </Border>
-                                        </StackPanel>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <!-- 待发条：插入图片/@ 时在文本框上方展开；块间留缝，双击缝在指定位置插入文本块 -->
+                        <ScrollViewer Grid.Row="1" MaxHeight="80" Margin="0,0,0,6"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                      IsVisible="{Binding HasInlineBlocks}">
+                            <StackPanel Orientation="Horizontal">
+                                <ItemsControl ItemsSource="{Binding ComposeSegments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="models:ComposeSegment">
+                                            <StackPanel Orientation="Horizontal">
+                                                <!-- 前缝：双击在此块之前插入文本块（两侧有一边是文本块则不建） -->
+                                                <Border Width="12" Background="Transparent" Cursor="Hand"
+                                                        DoubleTapped="OnInsertionGapDoubleTapped"
+                                                        Tag="{Binding}" ToolTip.Tip="双击在此插入文字" />
+                                                <!-- 块本体 -->
+                                                <Border Padding="4" Background="#00000012" CornerRadius="6"
+                                                        Cursor="Hand" Tag="{Binding}" PointerPressed="OnComposeBlockClicked">
+                                                    <Grid>
+                                                        <!-- 文本块：显示文本预览，点击切换为大文本框当前编辑 -->
+                                                        <TextBlock Text="{Binding TextPreview}" FontSize="12" MaxWidth="140"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   VerticalAlignment="Center" IsVisible="{Binding IsText}"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   ToolTip.Tip="文本（点击回到输入框）" />
+                                                        <!-- @ 块 -->
+                                                        <TextBlock Text="{Binding DisplayName}" FontSize="12"
+                                                                   VerticalAlignment="Center" IsVisible="{Binding IsAt}"
+                                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                   ToolTip.Tip="{Binding AtTip}" />
+                                                        <!-- 图片块 -->
+                                                        <Grid Width="48" Height="48" ClipToBounds="True" IsVisible="{Binding IsImage}"
+                                                              ToolTip.Tip="{Binding ImageTip}">
+                                                            <Border Background="#00000010" CornerRadius="4" />
+                                                            <Image Source="{Binding Image.Bitmap}" Stretch="Uniform" />
+                                                        </Grid>
+                                                    </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <!-- 尾缝：双击在末尾插入文本块 -->
+                                <Border Width="12" Background="Transparent" Cursor="Hand"
+                                        DoubleTapped="OnInsertionGapDoubleTapped"
+                                        ToolTip.Tip="双击在此插入文字" />
+                            </StackPanel>
+                        </ScrollViewer>
 
-                        <!-- 待发送图片条（选图/粘贴先入队，点发送时与文字合并） -->
-                        <ItemsControl Grid.Row="2" ItemsSource="{Binding PendingImages}"
-                                      IsVisible="{Binding HasPendingImages}" Margin="0,0,0,6">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <StackPanel Orientation="Horizontal" />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="models:MessageImage">
-                                    <Border Margin="0,0,6,0" Padding="4" Background="#00000012" CornerRadius="6" ClipToBounds="True">
-                                        <Grid>
-                                            <Image Source="{Binding Bitmap}" Width="72" Height="72"
-                                                   Stretch="UniformToFill" />
-                                            <Border HorizontalAlignment="Right" VerticalAlignment="Top"
-                                                    Background="#CC000000" CornerRadius="8" Padding="2" Margin="2">
-                                                <Button Content="✕" Width="16" Height="16" Padding="0" FontSize="9"
-                                                        Background="Transparent" Foreground="White"
-                                                        Command="{Binding $parent[ItemsControl].DataContext.RemovePendingImageCommand}"
-                                                        CommandParameter="{Binding}" />
-                                            </Border>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-
-                        <TextBox x:Name="Composer" Grid.Row="3" Text="{Binding ComposerText, Mode=TwoWay}"
+                        <TextBox x:Name="Composer" Grid.Row="2" Text="{Binding ComposerText, Mode=TwoWay}"
                                  PlaceholderText="输入消息，回车发送（Shift+Enter 换行）"
                                  AcceptsReturn="True" MinHeight="60" MaxHeight="160"
                                  TextWrapping="Wrap" FontSize="14"
                                  Background="{DynamicResource BgSurfaceBrush}" />
-                        <DockPanel Grid.Row="4" Margin="0,6,0,0">
+                        <DockPanel Grid.Row="3" Margin="0,6,0,0">
                             <Button DockPanel.Dock="Right" Content="发送 ⬆"
                                     Command="{Binding SendMessageCommand}"
                                     Background="{DynamicResource AccentBrush}" Foreground="White"
@@ -538,7 +535,7 @@
                                        Foreground="{DynamicResource TextPrimaryBrush}"
                                        VerticalAlignment="Center" />
                         </DockPanel>
-                        <Button DockPanel.Dock="Bottom" Content="{Binding AtPickerDoneText}"
+                        <Button DockPanel.Dock="Bottom" Content="关闭"
                                 Command="{Binding CloseAtPickerCommand}"
                                 Background="{DynamicResource AccentBrush}" Foreground="White"
                                 FontSize="13" CornerRadius="6" Padding="12,6" Margin="0,8,0,0" />

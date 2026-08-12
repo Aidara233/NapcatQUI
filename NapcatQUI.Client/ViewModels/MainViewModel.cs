@@ -87,14 +87,30 @@ public partial class MainViewModel : ViewModelBase
 
         StatusMessage = "核心服务已加载";
         SubscribeToCoreEvents();
-        // 选中 @ 成员变化时刷新"能否发送"与 chips 可见性
-        SelectedAtMembers.CollectionChanged += (_, _) =>
+        // 维护"至少一个文本块"不变量：大文本框绑定的当前文本块始终存在
+        _activeTextBlock = ComposeSegment.CreateText();
+        ComposeSegments.Add(_activeTextBlock);
+        // 片段增删/文字变化时刷新"能否发送"与待发条/待发内容可见性
+        ComposeSegments.CollectionChanged += (_, e) =>
         {
+            if (e.OldItems != null)
+                foreach (ComposeSegment s in e.OldItems) s.PropertyChanged -= OnComposeSegmentPropertyChanged;
+            if (e.NewItems != null)
+                foreach (ComposeSegment s in e.NewItems) s.PropertyChanged += OnComposeSegmentPropertyChanged;
             SendMessageCommand.NotifyCanExecuteChanged();
-            OnPropertyChanged(nameof(HasSelectedAtMembers));
-            OnPropertyChanged(nameof(AtPickerDoneText));
+            OnPropertyChanged(nameof(HasComposeContent));
+            OnPropertyChanged(nameof(HasInlineBlocks));
         };
         _ = InitializeAsync();
+    }
+
+    private void OnComposeSegmentPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ComposeSegment.Text))
+        {
+            SendMessageCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(HasComposeContent));
+        }
     }
 
     // ---- 集合 ----
@@ -109,10 +125,44 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<ConversationItem> Groups { get; } = new();
     public ObservableCollection<GroupMemberItem> GroupMembers { get; } = new();
 
-    /// <summary>待发送图片（选图/粘贴先入队，点发送时与文字合并为一条消息，支持图文混排）</summary>
-    public ObservableCollection<MessageImage> PendingImages { get; } = new();
+    /// <summary>待发送片段（文字/@/图片按序组成一条消息，可上移下移交叉排列）</summary>
+    public ObservableCollection<ComposeSegment> ComposeSegments { get; } = new();
 
-    public bool HasPendingImages => PendingImages.Count > 0;
+    /// <summary>当前正在编辑的文本块（大文本框绑定它）。始终存在一个文本块作锚点，可插入多个。</summary>
+    private ComposeSegment? _activeTextBlock;
+
+    /// <summary>待发条显示条件：含 @/图片，或已插入多个片段（多文本块也要能看见和操作）</summary>
+    public bool HasInlineBlocks =>
+        ComposeSegments.Count > 1 || ComposeSegments.Any(s => s.Kind != ComposeSegmentKind.Text);
+
+    public bool HasComposeContent => ComposeSegments.Any(s => !s.IsEmptyText);
+
+    /// <summary>大文本框绑定：读写当前激活的文本块内容</summary>
+    public string ComposerText
+    {
+        get => _activeTextBlock?.Text ?? "";
+        set
+        {
+            if (_activeTextBlock is null)
+                _activeTextBlock = CreateTextBlock();
+            _activeTextBlock!.Text = value;
+        }
+    }
+
+    private ComposeSegment CreateTextBlock()
+    {
+        var block = ComposeSegment.CreateText();
+        ComposeSegments.Add(block);
+        return block;
+    }
+
+    /// <summary>切换当前编辑的文本块并通知大文本框刷新</summary>
+    private void SetActiveTextBlock(ComposeSegment block)
+    {
+        _activeTextBlock = block;
+        OnPropertyChanged(nameof(ComposerText));
+        ComposerFocusRequested?.Invoke();
+    }
 
     /// <summary>待发图片上限：base64 内嵌膨胀约 33%，超大会导致报文过大或上传失败</summary>
     private const long MaxPendingImageBytes = 15L * 1024 * 1024;
@@ -133,10 +183,6 @@ public partial class MainViewModel : ViewModelBase
     private string _searchText = string.Empty;
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SendMessageCommand))]
-    private string _composerText = string.Empty;
-
-    [ObservableProperty]
     private string _currentPage = "chat";
 
     [ObservableProperty]
@@ -152,9 +198,6 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasReplyTarget))]
     private MessageItem? _selectedReply;
-
-    /// <summary>输入区已选中的 @ 成员（chip）</summary>
-    public ObservableCollection<AtMemberChip> SelectedAtMembers { get; } = new();
 
     /// <summary>@ 成员选择面板是否打开</summary>
     [ObservableProperty]
@@ -196,8 +239,6 @@ public partial class MainViewModel : ViewModelBase
     public bool ShowChatEmptyState => SelectedConversation is null;
     public bool IsSelectedGroup => SelectedConversation?.IsGroup == true;
     public bool HasReplyTarget => SelectedReply is not null;
-    public bool HasSelectedAtMembers => SelectedAtMembers.Count > 0;
-    public string AtPickerDoneText => $"完成（已选 {SelectedAtMembers.Count}）";
     public bool IsChatPage => CurrentPage == "chat";
     public bool IsContactsPage => CurrentPage == "contacts";
     public bool IsSettingsPage => CurrentPage == "settings";
@@ -269,8 +310,7 @@ public partial class MainViewModel : ViewModelBase
         IsAccountSwitcherOpen = false;
         IsAtPickerOpen = false;
         SelectedReply = null;
-        SelectedAtMembers.Clear();
-        ClearPendingImages();
+        ResetComposeSegments();
         CurrentPage = "chat";
         _ = LoadConversationMessagesAsync(value);
         _ = MarkConversationReadAsync(value);
@@ -521,36 +561,43 @@ public partial class MainViewModel : ViewModelBase
     {
         var conv = SelectedConversation;
         if (conv is null) return;
-        var text = ComposerText.Trim();
-        if (text.Length == 0 && SelectedAtMembers.Count == 0 && PendingImages.Count == 0) return;
+        if (!HasComposeContent) return;
 
         var segments = new List<MessageSegment>();
         if (SelectedReply is not null && !string.IsNullOrEmpty(SelectedReply.MessageId))
             segments.Add(MessageSegment.CreateReply(SelectedReply.MessageId));
-        foreach (var at in SelectedAtMembers)
-            segments.Add(MessageSegment.CreateAt(at.UserId));
-        if (text.Length > 0)
-            segments.Add(MessageSegment.CreateText(text));
-        foreach (var img in PendingImages)
+        foreach (var seg in ComposeSegments)
         {
-            var src = img.LocalPath ?? img.Source;
-            if (!string.IsNullOrEmpty(src))
-                segments.Add(MessageSegment.CreateImage(src));
+            switch (seg.Kind)
+            {
+                case ComposeSegmentKind.Text when !seg.IsEmptyText:
+                    segments.Add(MessageSegment.CreateText(seg.Text));
+                    break;
+                case ComposeSegmentKind.At:
+                    segments.Add(MessageSegment.CreateAt(seg.UserId));
+                    break;
+                case ComposeSegmentKind.Image:
+                    var src = seg.Image?.LocalPath ?? seg.Image?.Source;
+                    if (!string.IsNullOrEmpty(src))
+                        segments.Add(MessageSegment.CreateImage(src));
+                    break;
+            }
         }
 
         var sent = await SendSegmentsAsync(conv, segments);
         if (!sent)
         {
-            // 失败不乐观上屏：保留文字/图片/回复/@，便于重试，不污染会话
+            // 失败不乐观上屏：保留片段，便于重试，不污染会话
             StatusMessage = "发送失败，请检查网络后重试";
             return;
         }
 
         // 只有发送成功才乐观上屏（NapCat 回声会带真实 message_id，走 IsSentBySelf 去重）
-        var imagePaths = PendingImages.Count > 0
-            ? PendingImages.Select(i => i.LocalPath ?? i.Source).Where(p => !string.IsNullOrEmpty(p)).ToList()
-            : null;
-        var item = BuildOptimisticItem(conv, segments, imagePaths, true);
+        var imagePaths = segments
+            .Where(s => s.Type == MessageSegmentType.Image && s.ImageFile is not null)
+            .Select(s => s.ImageFile!)
+            .ToList();
+        var item = BuildOptimisticItem(conv, segments, imagePaths.Count > 0 ? imagePaths : null, true);
         if (SelectedReply is not null)
         {
             item.ReplyToMessageId = SelectedReply.MessageId;
@@ -560,15 +607,143 @@ public partial class MainViewModel : ViewModelBase
         }
         AppendToConversation(item, conv);
 
-        ComposerText = string.Empty;
         SelectedReply = null;
-        SelectedAtMembers.Clear();
-        ClearPendingImages();
+        ResetComposeSegments();
     }
 
     private bool CanSendMessage() =>
-        SelectedConversation is not null &&
-        (!string.IsNullOrWhiteSpace(ComposerText) || SelectedAtMembers.Count > 0 || PendingImages.Count > 0);
+        SelectedConversation is not null && HasComposeContent;
+
+    /// <summary>清空待发片段并补一个空文本块（发送成功后为下一条输入待命）</summary>
+    private void ResetComposeSegments()
+    {
+        foreach (var seg in ComposeSegments)
+            seg.Image?.DisposeGif();
+        ComposeSegments.Clear();
+        var block = ComposeSegment.CreateText();
+        ComposeSegments.Add(block);
+        _activeTextBlock = block;
+        OnPropertyChanged(nameof(ComposerText)); // 大文本框绑定它，必须通知清空
+        ComposerFocusRequested?.Invoke();
+    }
+
+    /// <summary>彻底清空待发片段并补一个空文本块（切会话/切账号/清空数据）</summary>
+    private void ClearComposeSegments()
+    {
+        foreach (var seg in ComposeSegments)
+            seg.Image?.DisposeGif();
+        ComposeSegments.Clear();
+        var block = ComposeSegment.CreateText();
+        ComposeSegments.Add(block);
+        _activeTextBlock = block;
+        OnPropertyChanged(nameof(ComposerText));
+    }
+
+    /// <summary>请求聚焦大文本框（code-behind 聚焦 Composer）</summary>
+    public event Action? ComposerFocusRequested;
+
+    /// <summary>上移片段（边界不越界）</summary>
+    [RelayCommand]
+    private void MoveSegmentUp(ComposeSegment? seg) => MoveSegment(seg, -1);
+
+    /// <summary>下移片段（边界不越界）</summary>
+    [RelayCommand]
+    private void MoveSegmentDown(ComposeSegment? seg) => MoveSegment(seg, +1);
+
+    private void MoveSegment(ComposeSegment? seg, int delta)
+    {
+        if (seg is null) return;
+        var idx = ComposeSegments.IndexOf(seg);
+        var target = idx + delta;
+        if (idx < 0 || target < 0 || target >= ComposeSegments.Count) return;
+        ComposeSegments.Move(idx, target);
+    }
+
+    /// <summary>
+    /// 在指定块之前插入文本块（双击该块左侧缝隙）。任一侧相邻是文本块则不建，
+    /// 避免两个文本块挨在一起（相邻文本块合并为一个更合理）。
+    /// </summary>
+    [RelayCommand]
+    private void InsertTextBefore(ComposeSegment? anchor)
+    {
+        if (anchor is null) return;
+        var idx = ComposeSegments.IndexOf(anchor);
+        if (idx < 0) return;
+        if (anchor.Kind == ComposeSegmentKind.Text) return;                    // 右侧（anchor）是文本块
+        if (idx > 0 && ComposeSegments[idx - 1].Kind == ComposeSegmentKind.Text) return; // 左侧是文本块
+        InsertTextBlock(idx);
+    }
+
+    /// <summary>
+    /// 在指定块之后插入文本块（双击该块右侧缝隙 / 列表末尾尾缝，anchor=null 表示末尾）。
+    /// 任一侧相邻是文本块则不建。
+    /// </summary>
+    [RelayCommand]
+    private void InsertTextAfter(ComposeSegment? anchor)
+    {
+        int idx;
+        if (anchor is null)
+        {
+            idx = ComposeSegments.Count; // 末尾
+            if (idx > 0 && ComposeSegments[idx - 1].Kind == ComposeSegmentKind.Text) return; // 左侧是文本块
+        }
+        else
+        {
+            idx = ComposeSegments.IndexOf(anchor) + 1;
+            if (idx < 0) return;
+            if (anchor.Kind == ComposeSegmentKind.Text) return;                // 左侧（anchor）是文本块
+            if (idx < ComposeSegments.Count && ComposeSegments[idx].Kind == ComposeSegmentKind.Text) return; // 右侧是文本块
+        }
+        InsertTextBlock(Math.Min(idx, ComposeSegments.Count));
+    }
+
+    private void InsertTextBlock(int index)
+    {
+        var block = ComposeSegment.CreateText();
+        ComposeSegments.Insert(index, block);
+        SetActiveTextBlock(block);
+    }
+
+    /// <summary>点击待发条上的文本块：切为大文本框当前编辑的文本块</summary>
+    [RelayCommand]
+    private void ActivateTextBlock(ComposeSegment? seg)
+    {
+        if (seg is { Kind: ComposeSegmentKind.Text } && !ReferenceEquals(_activeTextBlock, seg))
+            SetActiveTextBlock(seg);
+    }
+
+    /// <summary>删除一个片段；仅剩一个文本块时只清空不删除（大文本框需要它），@ 段同步取消 AtPicker 勾选态</summary>
+    [RelayCommand]
+    private void RemoveSegment(ComposeSegment? seg)
+    {
+        if (seg is null) return;
+        if (seg.Kind == ComposeSegmentKind.Text)
+        {
+            // 有多个文本块才真删；否则只清空内容
+            if (ComposeSegments.Count(s => s.Kind == ComposeSegmentKind.Text) > 1)
+            {
+                ComposeSegments.Remove(seg);
+                if (ReferenceEquals(_activeTextBlock, seg))
+                {
+                    _activeTextBlock = ComposeSegments.FirstOrDefault(s => s.Kind == ComposeSegmentKind.Text);
+                    OnPropertyChanged(nameof(ComposerText));
+                }
+            }
+            else
+            {
+                ComposerText = "";
+                OnPropertyChanged(nameof(ComposerText)); // 大文本框绑定了它，需通知清空
+                ComposerFocusRequested?.Invoke();
+            }
+            return;
+        }
+        if (seg.Kind == ComposeSegmentKind.At)
+            foreach (var m in GroupMembers)
+                if (m.UserId == seg.UserId) m.IsSelected = false;
+        if (seg.Kind == ComposeSegmentKind.Image)
+            seg.Image?.DisposeGif();
+        ComposeSegments.Remove(seg);
+    }
 
     // ---- 引用 / @ / 戳一戳 ----
 
@@ -583,18 +758,6 @@ public partial class MainViewModel : ViewModelBase
     private void ClearReply() => SelectedReply = null;
 
     [RelayCommand]
-    private void RemoveAtMember(AtMemberChip? chip)
-    {
-        if (chip is not null)
-        {
-            SelectedAtMembers.Remove(chip);
-            // 同步关闭选择面板里的勾选
-            foreach (var m in GroupMembers)
-                if (m.UserId == chip.UserId) m.IsSelected = false;
-        }
-    }
-
-    [RelayCommand]
     private void CloseAtPicker() => IsAtPickerOpen = false;
 
     /// <summary>打开 @ 成员选择面板（仅群聊）</summary>
@@ -605,41 +768,41 @@ public partial class MainViewModel : ViewModelBase
         IsGroupDetailsOpen = false;
         IsAtPickerOpen = true;
         await LoadGroupMembersAsync(group);
-        // 把已选中的 chip 同步成面板勾选态
+        // 把已加入的 @ 片段同步成面板勾选态
         foreach (var m in GroupMembers)
-            m.IsSelected = SelectedAtMembers.Any(c => c.UserId == m.UserId);
+            m.IsSelected = ComposeSegments.Any(s => s.Kind == ComposeSegmentKind.At && s.UserId == m.UserId);
     }
 
-    /// <summary>勾选/取消勾选 @ 成员</summary>
+    /// <summary>勾选/取消勾选 @ 成员：在片段列表末尾加/删对应 @ 段</summary>
     [RelayCommand]
     private void ToggleAtMember(GroupMemberItem? member)
     {
         if (member is null) return;
-        var existing = SelectedAtMembers.FirstOrDefault(c => c.UserId == member.UserId);
+        var existing = ComposeSegments.FirstOrDefault(s => s.Kind == ComposeSegmentKind.At && s.UserId == member.UserId);
         if (existing is not null)
         {
-            SelectedAtMembers.Remove(existing);
+            ComposeSegments.Remove(existing);
             member.IsSelected = false;
         }
         else
         {
-            SelectedAtMembers.Add(new AtMemberChip(member.UserId, member.Name));
+            ComposeSegments.Add(ComposeSegment.CreateAt(member.UserId, member.Name));
             member.IsSelected = true;
         }
     }
 
-    /// <summary>快捷 @ 消息发送者（悬停操作按钮），已选则忽略</summary>
+    /// <summary>快捷 @ 消息发送者（悬停操作按钮），已 @ 过则忽略</summary>
     [RelayCommand]
     private void AddAtMember(MessageItem? item)
     {
         if (item is null || item.IsMine || !item.IsGroup) return;
-        if (SelectedAtMembers.Any(c => c.UserId == item.SenderId)) return;
+        if (ComposeSegments.Any(s => s.Kind == ComposeSegmentKind.At && s.UserId == item.SenderId)) return;
 
         var name = _memberNameMaps.TryGetValue(SelectedConversation?.TargetId ?? "", out var map) &&
                    map.TryGetValue(item.SenderId, out var n)
             ? n
             : item.SenderName;
-        SelectedAtMembers.Add(new AtMemberChip(item.SenderId, name));
+        ComposeSegments.Add(ComposeSegment.CreateAt(item.SenderId, name));
         StatusMessage = $"已 @ {name}，输入内容后发送";
     }
 
@@ -657,7 +820,7 @@ public partial class MainViewModel : ViewModelBase
         StatusMessage = ok ? $"戳了 {item.SenderName} 一下" : "戳一戳发送失败";
     }
 
-    /// <summary>选择本地图片加入待发队列（点发送时与文字合并为一条消息，支持多图）</summary>
+    /// <summary>选择本地图片加入待发片段（点发送时按列表顺序组装，支持多图）</summary>
     [RelayCommand]
     private async Task SendImages()
     {
@@ -684,16 +847,16 @@ public partial class MainViewModel : ViewModelBase
         {
             var p = f.TryGetLocalPath();
             if (string.IsNullOrEmpty(p)) continue;
-            if (AddPendingImage(p)) added++;
+            if (AddImageSegment(p)) added++;
         }
 
         StatusMessage = added > 0
-            ? $"已添加 {added} 张图片，点发送直接发图，输入文字可图文混排"
+            ? $"已添加 {added} 张图片，可调整顺序后发送"
             : "所选图片无法添加（超过 15MB 或文件不可读）";
     }
 
-    /// <summary>把本地图片加入待发条；超限/无效返回 false</summary>
-    private bool AddPendingImage(string path)
+    /// <summary>把本地图片加入待发片段末尾；超限/无效返回 false</summary>
+    private bool AddImageSegment(string path)
     {
         try
         {
@@ -710,34 +873,9 @@ public partial class MainViewModel : ViewModelBase
             return false;
         }
 
-        var img = new MessageImage(path, null, _imageCache);
-        PendingImages.Add(img);
-        OnPropertyChanged(nameof(HasPendingImages));
-        // 只有图没文字时也能发：刷新发送按钮可用状态（CanSendMessage 依赖 PendingImages.Count）
-        SendMessageCommand.NotifyCanExecuteChanged();
-        _ = img.ResolveAsync();
+        // ComposeSegments.CollectionChanged 会自动刷新发送按钮与待发内容可见性
+        ComposeSegments.Add(ComposeSegment.CreateImage(path, _imageCache));
         return true;
-    }
-
-    /// <summary>从待发条移除一张图片</summary>
-    [RelayCommand]
-    private void RemovePendingImage(MessageImage? img)
-    {
-        if (img is null) return;
-        img.DisposeGif();
-        PendingImages.Remove(img);
-        OnPropertyChanged(nameof(HasPendingImages));
-        SendMessageCommand.NotifyCanExecuteChanged();
-    }
-
-    /// <summary>清空待发条（发送成功 / 切会话 / 清空数据时）</summary>
-    private void ClearPendingImages()
-    {
-        if (PendingImages.Count == 0) return;
-        foreach (var img in PendingImages) img.DisposeGif();
-        PendingImages.Clear();
-        OnPropertyChanged(nameof(HasPendingImages));
-        SendMessageCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>粘贴图片入队（MainWindow 捕获 Ctrl+V 剪贴板图片后调用，bitmap 已编码为 PNG 落盘）</summary>
@@ -750,8 +888,8 @@ public partial class MainViewModel : ViewModelBase
         {
             var path = _imageCache.CreatePasteImagePath();
             bitmap.Save(path, PngBitmapEncoderOptions.Default); // 输出 PNG
-            if (AddPendingImage(path))
-                StatusMessage = "已添加图片，点发送直接发图，输入文字可图文混排";
+            if (AddImageSegment(path))
+                StatusMessage = "已添加图片，可调整顺序后发送";
             else
                 StatusMessage = "粘贴图片失败";
         }
@@ -889,7 +1027,7 @@ public partial class MainViewModel : ViewModelBase
         CurrentAccount = account;
         SelectedConversation = null;
         DisposeGifs(_messageCache.Values.SelectMany(v => v)); // 账号切换，释放旧账号 GIF
-        ClearPendingImages();
+        ClearComposeSegments();
         Messages.Clear();
         IsAccountSwitcherOpen = false;
         IsGroupDetailsOpen = false;
@@ -1161,7 +1299,7 @@ public partial class MainViewModel : ViewModelBase
         Groups.Clear();
         GroupMembers.Clear();
         Messages.Clear();
-        ClearPendingImages();
+        ClearComposeSegments();
         SelectedConversation = null;
         OnPropertyChanged(nameof(HasConversations));
         OnPropertyChanged(nameof(ShowSearchEmptyState));
