@@ -489,24 +489,45 @@ public class AccountSession : IAsyncDisposable
                 ["count"] = count,
                 ["reverse_order"] = true
             });
-            if (result == null) return new();
+            if (result == null) return null; // 超时/未连接 → 可重试
+
+            var root = result.RootElement;
+
+            // 非 ok 响应：区分「翻到历史起点」与「瞬时错误」。
+            // NapCat 的 get_*_msg_history 在翻到起点时抛「消息xxx不存在」→ status=failed，
+            // 这是正常终态；其他 failed 才是瞬时错误，应重试而非当作「没有更早消息」丢弃。
+            if (root.TryGetProperty("status", out var st) && st.GetString() != "ok")
+            {
+                var wording = root.TryGetProperty("wording", out var w) && w.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? w.GetString()
+                    : root.TryGetProperty("message", out var m) && m.ValueKind == System.Text.Json.JsonValueKind.String
+                        ? m.GetString() : "";
+                if (wording?.Contains("不存在") == true)
+                {
+                    _logger.LogDebug("History reached origin for {TargetId} seq={Seq}", targetId, messageSeq);
+                    return new(); // 到起点：终态空列表
+                }
+                _logger.LogWarning("History API failed for {TargetId} seq={Seq}: {Reason}", targetId, messageSeq, wording);
+                return null; // 其他错误 → 重试
+            }
+
+            // ok 响应必须带 data.messages 数组；缺失/非数组视为接口异常，重试
+            if (!root.TryGetProperty("data", out var d) || !d.TryGetProperty("messages", out var ms) ||
+                ms.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                _logger.LogWarning("History API returned unexpected shape for {TargetId} seq={Seq}", targetId, messageSeq);
+                return null;
+            }
 
             var messages = new List<Message>();
-            var data = result.RootElement;
-            var msgArray = data.TryGetProperty("data", out var d) && d.TryGetProperty("messages", out var ms)
-                ? ms : default;
-
-            if (msgArray.ValueKind == System.Text.Json.JsonValueKind.Array)
+            foreach (var m in ms.EnumerateArray())
             {
-                foreach (var m in msgArray.EnumerateArray())
+                var msg = _parser.Parse(m.GetRawText());
+                if (msg != null)
                 {
-                    var msg = _parser.Parse(m.GetRawText());
-                    if (msg != null)
-                    {
-                        msg.AccountId = _account.Uin;
-                        msg.TargetId = targetId;
-                        messages.Add(msg);
-                    }
+                    msg.AccountId = _account.Uin;
+                    msg.TargetId = targetId;
+                    messages.Add(msg);
                 }
             }
 
