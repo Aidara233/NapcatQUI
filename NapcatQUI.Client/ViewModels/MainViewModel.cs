@@ -43,6 +43,14 @@ public partial class MainViewModel : ViewModelBase
     private readonly Dictionary<string, ConversationItem> _conversationMap = new();
     private readonly Dictionary<string, List<MessageItem>> _messageCache = new();
 
+    /// <summary>
+    /// 历史版本号：启动/重连补偿追回离线消息后 +1。每个会话缓存记录其加载时的版本，
+    /// 版本落后于当前值时判为过期，切会话时强制重读数据库而非用旧缓存，避免离线消息
+    /// 落库了却因内存缓存挡住而「假丢」。
+    /// </summary>
+    private int _historyVersion;
+    private readonly Dictionary<string, int> _cacheVersion = new();
+
     /// <summary>数据刷新防抖：同步时大量事件涌入，只等平息后再刷一次，避免和写入抢 SQLite 锁</summary>
     private CancellationTokenSource? _refreshCts;
 
@@ -53,15 +61,7 @@ public partial class MainViewModel : ViewModelBase
     private const int ConversationPageSize = 60;
     private int _conversationLoadedCount;
 
-    /// <summary>每个会话是否还有更早的本地历史可加载（聊天分页用）</summary>
-    private readonly Dictionary<string, bool> _hasMoreHistory = new();
-
     public bool HasMoreConversations => _conversationLoadedCount < _allConversations.Count;
-
-    /// <summary>当前选中会话是否还能加载更早的消息（顶部"加载更早的消息"按钮）</summary>
-    public bool HasMoreMessages =>
-        SelectedConversation is not null &&
-        _hasMoreHistory.TryGetValue(SelectedConversation.Id, out var more) && more;
 
     private static readonly string[] Palette =
         { "#B47742", "#667A71", "#7C718C", "#718C79", "#8E7559", "#6D7F91", "#8C6E67", "#7D718B" };
@@ -303,7 +303,6 @@ public partial class MainViewModel : ViewModelBase
     partial void OnSelectedConversationChanged(ConversationItem? value)
     {
         OnPropertyChanged(nameof(ConversationSubtitle));
-        OnPropertyChanged(nameof(HasMoreMessages));
         if (value is null) return;
 
         foreach (var c in _allConversations)
@@ -348,11 +347,11 @@ public partial class MainViewModel : ViewModelBase
         Messages.Clear(); // 立即清空，避免切会话时残留上个会话的消息
         // 注意：实时消息进的是 _messageCache，不受这里 Clear 影响，加载完会 merge 回来
 
-        if (_messageCache.TryGetValue(conv.Id, out var cached) && cached.Count > 0)
+        if (_messageCache.TryGetValue(conv.Id, out var cached) && cached.Count > 0 &&
+            _cacheVersion.TryGetValue(conv.Id, out var ver) && ver == _historyVersion)
         {
             foreach (var m in cached) Messages.Add(m);
             SetGifsVisible(cached, true); // 缓存会话回来，恢复动画
-            OnPropertyChanged(nameof(HasMoreMessages));
             return;
         }
 
@@ -397,9 +396,7 @@ public partial class MainViewModel : ViewModelBase
             }
 
             _messageCache[conv.Id] = items;
-            // 有消息就显示"加载更早"按钮（本地没有更早时点了会提示，见 LoadEarlierMessages）
-            _hasMoreHistory[conv.Id] = items.Count > 0;
-            OnPropertyChanged(nameof(HasMoreMessages));
+            _cacheVersion[conv.Id] = _historyVersion;
 
             Messages.Clear();
             foreach (var m in items) Messages.Add(m);
@@ -430,110 +427,75 @@ public partial class MainViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 加载更早的历史消息（顶部按钮）。先翻本地库（免费瞬时），本地翻空后走 NapCat：
-    /// 以最老一条有真实 id 的消息为游标往回翻一页（见 AccountSession.FetchOlderMessagesAsync）。
+    /// 加载更早的历史消息（顶部按钮，常驻）。直接从 NapCat 拉一页（真相源），
+    /// 不信任本地库 —— 本地库可能因丢消息有洞，按本地时间戳翻页会跳过洞；
+    /// INSERT OR IGNORE 天然去重，重复拉无害。以最老一条有真实 id 的消息为游标往回翻。
     /// </summary>
     [RelayCommand]
     private async Task LoadEarlierMessages()
     {
         var conv = SelectedConversation;
-        if (conv is null || _historyService is null) return;
+        if (conv is null) return;
         if (!_messageCache.TryGetValue(conv.Id, out var cache) || cache.Count == 0) return;
+
+        // 游标取最老一条有真实 id 的消息（系统通知等无 id，跳过）
+        var cursor = cache.FirstOrDefault(m => m.MessageId.Length > 0);
+        if (cursor is null)
+        {
+            StatusMessage = "已是最早的消息";
+            return;
+        }
+
+        var session = _accountManager?.GetSession(conv.AccountId);
+        if (session is null)
+        {
+            StatusMessage = "未连接，无法加载更早消息";
+            return;
+        }
 
         try
         {
-            var oldest = cache[0];
-            var list = await _historyService.GetHistoryAsync(conv.AccountId, conv.TargetId, 60, oldest.Timestamp.ToString("o"));
-
-            if (list.Count > 0)
-            {
-                var atMap = TryGetMemberNameMap(conv);
-                var items = list.Select(e => ToMessageItem(e, conv, atMap)).ToList();
-                items.Reverse(); // 倒序转正
-
-                // 这批内部的时间分隔
-                MessageItem? prevMsg = null;
-                foreach (var m in items)
-                {
-                    m.UpdateTimeDivider(prevMsg?.Timestamp);
-                    prevMsg = m;
-                }
-
-                // 预插到 cache 头部；修正边界分隔（原最老一条与新批次的衔接）
-                cache.InsertRange(0, items);
-                if (cache.Count > items.Count)
-                    cache[items.Count].UpdateTimeDivider(items[^1].Timestamp);
-
-                // 预插到 Messages 头部（代码后置 OnMessagesChanged 检测到顶部插入就不滚底）
-                for (int i = 0; i < items.Count; i++)
-                    Messages.Insert(i, items[i]);
-
-                SetGifsVisible(items, true);
-                // 本地还有或 NapCat 还有更早，留按钮让下一次点击继续判定
-                _hasMoreHistory[conv.Id] = true;
-                OnPropertyChanged(nameof(HasMoreMessages));
-                return;
-            }
-
-            // 本地翻空 → 走 NapCat 往前翻
-            var session = _accountManager?.GetSession(conv.AccountId);
-            if (session is null)
-            {
-                _hasMoreHistory[conv.Id] = false;
-                OnPropertyChanged(nameof(HasMoreMessages));
-                return;
-            }
-
-            // 游标取最老一条有真实 id 的消息（系统通知等无 id，跳过）
-            var cursor = cache.FirstOrDefault(m => m.MessageId.Length > 0);
-            if (cursor is null)
-            {
-                _hasMoreHistory[conv.Id] = false;
-                OnPropertyChanged(nameof(HasMoreMessages));
-                return;
-            }
-
             var type = conv.IsGroup ? MessageType.Group : MessageType.Private;
             var older = await session.FetchOlderMessagesAsync(conv.TargetId, type, cursor.MessageId, 20);
             if (older.Count == 0)
             {
-                _hasMoreHistory[conv.Id] = false;
-                OnPropertyChanged(nameof(HasMoreMessages));
                 StatusMessage = "已是最早的消息";
                 return;
             }
 
             // reverse_order 会把游标消息也带回，去掉已显示过的
             var known = new HashSet<string>(cache.Select(m => m.MessageId).Where(id => id.Length > 0));
-            var atMap2 = TryGetMemberNameMap(conv);
-            var items2 = older
+            var atMap = TryGetMemberNameMap(conv);
+            var items = older
                 .Where(m => string.IsNullOrEmpty(m.MessageId) || !known.Contains(m.MessageId))
-                .Select(m => ToMessageItem(m, conv, atMap2))
+                .Select(m => ToMessageItem(m, conv, atMap))
                 .ToList();
-            if (items2.Count == 0)
+            if (items.Count == 0)
             {
-                _hasMoreHistory[conv.Id] = false;
-                OnPropertyChanged(nameof(HasMoreMessages));
+                StatusMessage = "已是最早的消息";
                 return;
             }
 
             MessageItem? prev = null;
-            foreach (var m in items2)
+            foreach (var m in items)
             {
                 m.UpdateTimeDivider(prev?.Timestamp);
                 prev = m;
             }
 
-            cache.InsertRange(0, items2);
-            if (cache.Count > items2.Count)
-                cache[items2.Count].UpdateTimeDivider(items2[^1].Timestamp);
+            // 预插到 cache 头部；修正边界分隔（原最老一条与新批次的衔接）
+            cache.InsertRange(0, items);
+            if (cache.Count > items.Count)
+                cache[items.Count].UpdateTimeDivider(items[^1].Timestamp);
 
-            for (int i = 0; i < items2.Count; i++)
-                Messages.Insert(i, items2[i]);
+            // 预插到 Messages 头部（代码后置 OnMessagesChanged 检测到顶部插入就不滚底）
+            for (int i = 0; i < items.Count; i++)
+                Messages.Insert(i, items[i]);
 
-            SetGifsVisible(items2, true);
-            _hasMoreHistory[conv.Id] = older.Count >= 20; // 满页说明可能还有更早
-            OnPropertyChanged(nameof(HasMoreMessages));
+            SetGifsVisible(items, true);
+            StatusMessage = older.Count >= 20
+                ? $"已加载 {items.Count} 条，可继续加载更早"
+                : "已是最早的消息";
         }
         catch (Exception ex)
         {
@@ -1537,7 +1499,7 @@ public partial class MainViewModel : ViewModelBase
         DisposeGifs(_messageCache.Values.SelectMany(v => v)); // 释放 GIF 帧与定时器
         DisposeAvatarCache();
         _memberNameMaps.Clear();
-        _hasMoreHistory.Clear();
+        _cacheVersion.Clear();
         _allConversations = new();
         _conversationMap.Clear();
         _messageCache.Clear();
@@ -1567,7 +1529,7 @@ public partial class MainViewModel : ViewModelBase
             _messageCache.Clear();
             DisposeAvatarCache();
             _memberNameMaps.Clear();
-            _hasMoreHistory.Clear();
+            _cacheVersion.Clear();
             _conversationLoadedCount = 0;
         }
 
@@ -1877,8 +1839,17 @@ public partial class MainViewModel : ViewModelBase
 
         _accountManager.OnHistoryCaughtUp += accountId =>
         {
-            if (CurrentAccount?.Uin == accountId)
-                ScheduleDataRefresh();
+            if (CurrentAccount?.Uin != accountId)
+                return Task.CompletedTask;
+            ScheduleDataRefresh();
+            // 补偿追回了离线消息，但已加载到内存缓存/视图的数据还是旧的：
+            // 版本 +1 使所有会话缓存过期；当前打开的会话立即重载，其他会话切过去时重读库。
+            _historyVersion++;
+            if (SelectedConversation is { } conv)
+            {
+                _cacheVersion.Remove(conv.Id);
+                _ = LoadConversationMessagesAsync(conv);
+            }
             return Task.CompletedTask;
         };
     }

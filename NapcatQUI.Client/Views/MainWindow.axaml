@@ -208,10 +208,10 @@
 
                 <!-- 消息区 -->
                 <Grid Grid.Row="1" Background="{DynamicResource BgPrimaryBrush}" RowDefinitions="Auto,*">
-                    <!-- 加载更早的消息（本地分页，向上翻历史） -->
+                    <!-- 加载更早的消息（常驻：随时从 NapCat 拉取补洞，本地库可能因丢消息有洞） -->
                     <Button Grid.Row="0" Content="加载更早的消息…"
                             Command="{Binding LoadEarlierMessagesCommand}"
-                            IsVisible="{Binding HasMoreMessages}"
+                            IsVisible="{Binding HasSelectedConversation}"
                             HorizontalAlignment="Center" Margin="0,6"
                             Padding="12,4" FontSize="11" CornerRadius="6"
                             Background="Transparent" />

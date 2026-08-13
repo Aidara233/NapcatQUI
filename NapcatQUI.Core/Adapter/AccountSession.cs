@@ -290,9 +290,9 @@ public class AccountSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// 连接建立后后台跑全量历史补偿：对每个好友/群拉最近 ~100 条入库（未读由此得出）。
-    /// 有并发上限，不阻塞连接循环；全部完成后触发 OnHistoryCaughtUp 让 UI 重算未读。
-    /// 会话停止时随 _cts 取消。
+    /// 连接建立后后台跑全量历史补偿：对每个好友/群从最新往回翻到「本地已有消息」，
+    /// 追回离线期间漏掉的消息（未读由此得出）。有并发上限，不阻塞连接循环；
+    /// 全部完成后触发 OnHistoryCaughtUp 让 UI 重算未读。会话停止时随 _cts 取消。
     /// </summary>
     private void StartHistoryCatchUp(CancellationToken ct)
     {
@@ -313,7 +313,7 @@ public class AccountSession : IAsyncDisposable
                     await _catchUpThrottle.WaitAsync(ct);
                     try
                     {
-                        await CatchUpHistoryAsync(t.TargetId, t.Type, 100, ct);
+                        await CatchUpHistoryAsync(t.TargetId, t.Type, 500, ct);
                     }
                     finally
                     {
@@ -610,20 +610,22 @@ public class AccountSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// 启动/重连补偿：从最新一批往回翻，逐批入库，直到达到预算或翻到历史起点。
+    /// 启动/重连补偿：从最新一批往回翻，逐批入库，直到「翻到本地已有消息」或「到历史起点」。
     /// 单页 20（QQNT 原生上限，count 设大不可靠）。
     ///
-    /// 特意不把「某页全是已入库消息」当作停批条件：上一轮追赶若在中间被瞬时错误中断，
-    /// 会留下中间空洞；靠「已入库就不拉」会让洞被永久跳过。无条件把预算内的窗口全部从
-    /// 远端过一遍（INSERT OR IGNORE 天然去重）才能兜住。代价是每连接多拉几页，由
-    /// maxMessages 封顶，下轮连接仍会重跑全窗口。
+    /// 停止条件以「本页无新增」为准：翻到本地已有的消息说明离线期间的消息已全部追回，
+    /// 再往后都是旧历史。这与「固定条数」不同——离线期间消息再多也能追平，不受预算截断。
+    /// 上限 maxMessages 仅作兜底（本地库为空时会一路翻到起点，避免无限翻页），设得足够大。
+    ///
+    /// 注：早先曾改为「无条件重拉固定 100 条」以补中间洞，但固定预算会把离线期间超过
+    /// 100 条的消息截断丢失（更严重的回归）。中间洞由常驻的「加载更早」按钮补，这里回归
+    /// 追平本职。
     /// </summary>
-    public async Task<int> CatchUpHistoryAsync(string targetId, MessageType type, int maxMessages = 100, CancellationToken ct = default)
+    public async Task<int> CatchUpHistoryAsync(string targetId, MessageType type, int maxMessages = 500, CancellationToken ct = default)
     {
         const int pageSize = 20;
         var maxPages = Math.Max(1, maxMessages / pageSize);
         var inserted = 0;
-        var fetched = 0;
         string? seq = null;
 
         for (var page = 0; page < maxPages; page++)
@@ -636,14 +638,15 @@ public class AccountSession : IAsyncDisposable
                 _logger.LogWarning("History catch-up for {TargetId} aborted: page fetch failed after retries", targetId);
                 break;
             }
-            fetched += pageMsgs.Count;
-            if (pageMsgs.Count == 0) break;          // 确实没有更早的了
+            if (pageMsgs.Count == 0) break;          // 到历史起点（接口返回空）
 
+            var pageNew = 0;
             foreach (var msg in pageMsgs)
-                if (await SaveMessageAsync(msg)) inserted++;
+                if (await SaveMessageAsync(msg)) pageNew++;
+            inserted += pageNew;
 
+            if (pageNew == 0) break;                 // 本页全是已入库消息 → 已追平本地
             if (pageMsgs.Count < pageSize) break;    // 不满整页 → 到历史起点
-            if (fetched >= maxMessages) break;       // 达到预算
 
             seq = pageMsgs[0].MessageId;             // 以最老一条为起点继续往回翻
             if (string.IsNullOrEmpty(seq)) break;
